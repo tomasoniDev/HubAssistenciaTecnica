@@ -1,9 +1,6 @@
 import { NextResponse } from "next/server";
 
 const TILE_SOURCES = [
-  "https://a.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png",
-  "https://b.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png",
-  "https://c.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png",
   "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
 ];
 
@@ -44,7 +41,7 @@ export async function GET(
     const tileBuffer = await response.arrayBuffer();
     return new Response(tileBuffer, {
       headers: {
-        "Cache-Control": "public, max-age=1209600, s-maxage=1209600, stale-while-revalidate=604800",
+        "Cache-Control": "public, max-age=86400, s-maxage=604800, stale-while-revalidate=86400",
         "Content-Type": response.headers.get("content-type") ?? "image/png"
       }
     });

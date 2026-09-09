@@ -1966,8 +1966,8 @@ export default function Home() {
           if (!cancelled) map.invalidateSize();
         }, 120);
 
-        leaflet.tileLayer("/api/map-tile/{z}/{x}/{y}.png", {
-          attribution: "&copy; OpenStreetMap &copy; CARTO",
+        leaflet.tileLayer("/api/map-tile/{z}/{x}/{y}.png?v=osm-20260909", {
+          attribution: "&copy; OpenStreetMap",
           detectRetina: true
         }).addTo(map);
 
