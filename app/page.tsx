@@ -1432,6 +1432,7 @@ export default function Home() {
   const signatureCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const overviewMapRef = useRef<HTMLDivElement | null>(null);
   const leafletMapRef = useRef<LeafletMap | null>(null);
+  const machineFormSourceIdRef = useRef<string | null>(null);
   const [sessionReady, setSessionReady] = useState(false);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [currentUserId, setCurrentUserId] = useState("");
@@ -2071,6 +2072,11 @@ export default function Home() {
   }
 
   useEffect(() => {
+    if (machineFormSourceIdRef.current === editingMachineId) return;
+    if (editingMachineId && !editingMachine) return;
+
+    // Refreshing server data must not overwrite the machine being edited.
+    machineFormSourceIdRef.current = editingMachineId;
     setMachineForm(machineFormFromMachine(editingMachine));
   }, [editingMachineId, editingMachine]);
 
