@@ -73,22 +73,13 @@ function line(doc: jsPDF, x1: number, y1: number, x2: number, y2: number, color 
   doc.line(x1, y1, x2, y2);
 }
 
-function labelValue(doc: jsPDF, label: string, value: string | null | undefined, x: number, y: number, width: number) {
-  setText(doc, MUTED, 7, "bold");
-  doc.text(label.toUpperCase(), x, y);
-  setText(doc, DARK, 9);
-  const lines = doc.splitTextToSize(valueOrDash(value), width).slice(0, 2);
-  doc.text(lines, x, y + 16, { lineHeightFactor: 1.25 });
-  line(doc, x, y + 22, x + width, y + 22, LINE, 0.55);
-}
-
 function sectionTitle(doc: jsPDF, title: string, y: number) {
   setText(doc, BLUE, 10, "bold");
   doc.text(title.toUpperCase(), MARGIN, y);
   line(doc, MARGIN, y + 9, PAGE_WIDTH - MARGIN, y + 9, BLUE, 1.2);
 }
 
-function wrappedFieldRow(doc: jsPDF, fields: { label: string; value: string | null | undefined; x: number; width: number }[], y: number) {
+function wrappedFieldRow(doc: jsPDF, fields: { label: string; value: string | null | undefined; x: number; width: number }[], y: number, gap = 31) {
   const lineHeight = 11.25;
   setText(doc, DARK, 9);
   const values = fields.map((field) => doc.splitTextToSize(valueOrDash(field.value), field.width) as string[]);
@@ -111,7 +102,7 @@ function wrappedFieldRow(doc: jsPDF, fields: { label: string; value: string | nu
     });
 
     offset += count;
-    y = bottom + 31;
+    y = bottom + gap;
   }
 
   return y;
@@ -245,24 +236,31 @@ async function drawHeader(doc: jsPDF, machine: Machine, record: ServiceRecord) {
 function drawMachineData(doc: jsPDF, machine: Machine) {
   sectionTitle(doc, "Dados da máquina", 203);
   const col = (CONTENT_WIDTH - 24) / 3;
-  labelValue(doc, "Cliente", machine.client, MARGIN, 234, col);
-  labelValue(doc, "Unidade / Cidade", machine.unit_city, MARGIN + col + 12, 234, col);
-  labelValue(doc, "Modelo", machine.model, MARGIN + (col + 12) * 2, 234, col);
-  labelValue(doc, "Código", machine.code, MARGIN, 273, col);
-  labelValue(doc, "Número de série", machine.serial, MARGIN + col + 12, 273, col);
-  labelValue(doc, "Fabricação", formatMonthYear(machine.manufacture_month), MARGIN + (col + 12) * 2, 273, col);
+  const y = wrappedFieldRow(doc, [
+    { label: "Cliente", value: machine.client, x: MARGIN, width: col },
+    { label: "Unidade / Cidade", value: machine.unit_city, x: MARGIN + col + 12, width: col },
+    { label: "Modelo", value: machine.model, x: MARGIN + (col + 12) * 2, width: col }
+  ], 234, 17);
+  return wrappedFieldRow(doc, [
+    { label: "Código", value: machine.code, x: MARGIN, width: col },
+    { label: "Número de série", value: machine.serial, x: MARGIN + col + 12, width: col },
+    { label: "Fabricação", value: formatMonthYear(machine.manufacture_month), x: MARGIN + (col + 12) * 2, width: col }
+  ], y, 35);
 }
 
-function drawServiceData(doc: jsPDF, record: ServiceRecord) {
-  sectionTitle(doc, "Dados do atendimento", 330);
+function drawServiceData(doc: jsPDF, record: ServiceRecord, y: number) {
+  y = ensurePageSpace(doc, y, 65);
+  sectionTitle(doc, "Dados do atendimento", y);
   const col = (CONTENT_WIDTH - 24) / 3;
-  labelValue(doc, "Início", serviceDateTimeOrFallback(record.service_start, record.service_date), MARGIN, 361, col);
-  labelValue(doc, "Fim", record.service_end, MARGIN + col + 12, 361, col);
-  labelValue(doc, "Tipo de atendimento", record.service_type ?? "Acesso remoto", MARGIN + (col + 12) * 2, 361, col);
-  let y = wrappedFieldRow(doc, [
+  y = wrappedFieldRow(doc, [
+    { label: "Início", value: serviceDateTimeOrFallback(record.service_start, record.service_date), x: MARGIN, width: col },
+    { label: "Fim", value: record.service_end, x: MARGIN + col + 12, width: col },
+    { label: "Tipo de atendimento", value: record.service_type ?? "Acesso remoto", x: MARGIN + (col + 12) * 2, width: col }
+  ], y + 31, 17);
+  y = wrappedFieldRow(doc, [
     { label: "Equipamento", value: record.equipment, x: MARGIN, width: col },
     { label: "Motivo breve", value: record.issue_summary, x: MARGIN + col + 12, width: CONTENT_WIDTH - col - 12 }
-  ], 400);
+  ], y);
   y = flowTextSection(doc, "Solicitação do cliente / problema relatado", record.request, y);
   y = flowTextSection(doc, "Diagnóstico", record.diagnosis, y);
   y = flowTextSection(doc, "Serviço realizado", record.service_done, y);
@@ -276,14 +274,16 @@ function drawTechnicianData(doc: jsPDF, record: ServiceRecord, y: number) {
   sectionTitle(doc, "Técnico responsável", y);
   const col = (CONTENT_WIDTH - 24) / 3;
   const responsibleEmail = isAssemblyRole(record.technician_role) ? "" : record.technician_email;
-  labelValue(doc, "Nome", record.technician_name, MARGIN, y + 31, col);
-  labelValue(doc, "E-mail", responsibleEmail, MARGIN + col + 12, y + 31, col);
-  labelValue(doc, "Contato Tomasoni", TOMASONI_CONTACT_PHONE, MARGIN + (col + 12) * 2, y + 31, col);
+  y = wrappedFieldRow(doc, [
+    { label: "Nome", value: record.technician_name, x: MARGIN, width: col },
+    { label: "E-mail", value: responsibleEmail, x: MARGIN + col + 12, width: col },
+    { label: "Contato Tomasoni", value: TOMASONI_CONTACT_PHONE, x: MARGIN + (col + 12) * 2, width: col }
+  ], y + 31, 15);
 
-  if (!supportTechnicians.length) return y + 68;
+  if (!supportTechnicians.length) return y;
 
-  y += 78;
-  y = ensurePageSpace(doc, y, 38 + supportTechnicians.length * 18);
+  y += 10;
+  y = ensurePageSpace(doc, y, 45);
   setText(doc, MUTED, 7, "bold");
   doc.text("DEMAIS TÉCNICOS PARTICIPANTES", MARGIN, y);
   line(doc, MARGIN, y + 8, PAGE_WIDTH - MARGIN, y + 8, SOFT_LINE, 0.5);
@@ -294,8 +294,15 @@ function drawTechnicianData(doc: jsPDF, record: ServiceRecord, y: number) {
     const role = String(technician.role ?? "").trim();
     const email = isAssemblyRole(role) ? "" : String(technician.email ?? "").trim();
     const lineText = email ? `${technician.name} (${email})` : technician.name;
-    doc.text(doc.splitTextToSize(lineText, CONTENT_WIDTH - 8).slice(0, 1), MARGIN + 8, y);
-    y += 18;
+    setText(doc, DARK, 8.8);
+    const lines = doc.splitTextToSize(lineText, CONTENT_WIDTH - 8) as string[];
+    for (const textLine of lines) {
+      y = ensurePageSpace(doc, y, 18);
+      setText(doc, DARK, 8.8);
+      doc.text(textLine, MARGIN + 8, y);
+      y += 13.2;
+    }
+    y += 4.8;
   });
   return y + 8;
 }
@@ -331,12 +338,22 @@ function drawAttachmentImage(doc: jsPDF, attachment: ServiceAttachment, index: n
   const imageWidth = originalWidth * scale;
   const imageHeight = originalHeight * scale;
   const imageX = MARGIN + (CONTENT_WIDTH - imageWidth) / 2;
-  const blockHeight = imageHeight + 42;
+  setText(doc, MUTED, 7, "bold");
+  const captionLines = doc.splitTextToSize(attachmentCaption(attachment, index).toUpperCase(), CONTENT_WIDTH) as string[];
+  const captionHeight = (captionLines.length - 1) * 9;
+  const blockHeight = imageHeight + 42 + captionHeight;
   y = ensurePageSpace(doc, y, blockHeight);
 
   setText(doc, MUTED, 7, "bold");
-  doc.text(attachmentCaption(attachment, index).toUpperCase(), MARGIN, y);
+  for (const captionLine of captionLines) {
+    y = ensurePageSpace(doc, y, 18);
+    setText(doc, MUTED, 7, "bold");
+    doc.text(captionLine, MARGIN, y);
+    y += 9;
+  }
+  y -= 9;
   line(doc, MARGIN, y + 8, PAGE_WIDTH - MARGIN, y + 8, SOFT_LINE, 0.5);
+  y = ensurePageSpace(doc, y, imageHeight + 42);
 
   try {
     doc.addImage(attachment.dataUrl, imageFormat(attachment.dataUrl), imageX, y + 18, imageWidth, imageHeight, undefined, "MEDIUM");
@@ -345,7 +362,7 @@ function drawAttachmentImage(doc: jsPDF, attachment: ServiceAttachment, index: n
     doc.text("Imagem não pôde ser renderizada no PDF.", MARGIN, y + 50);
   }
 
-  return y + blockHeight;
+  return y + imageHeight + 42;
 }
 
 function drawAttachments(doc: jsPDF, record: ServiceRecord, y: number) {
@@ -383,28 +400,38 @@ function drawSignatureData(doc: jsPDF, record: ServiceRecord, y: number) {
   y = ensurePageSpace(doc, y, 190);
   sectionTitle(doc, "Assinatura do cliente", y);
   const col = (CONTENT_WIDTH - 12) / 2;
-  labelValue(doc, "Tipo de atendimento", record.service_type ?? "Visita técnica", MARGIN, y + 31, col);
-  labelValue(doc, "Cliente / representante", record.customer_name, MARGIN + col + 12, y + 31, col);
+  y = wrappedFieldRow(doc, [
+    { label: "Tipo de atendimento", value: record.service_type ?? "Visita técnica", x: MARGIN, width: col },
+    { label: "Cliente / representante", value: record.customer_name, x: MARGIN + col + 12, width: col }
+  ], y + 31, 33);
+  y = ensurePageSpace(doc, y, 130);
 
   if (record.customer_signature) {
     const signatureWidth = 260;
     const signatureHeight = 72;
     const signatureX = MARGIN + (CONTENT_WIDTH - signatureWidth) / 2;
-    const signatureY = y + 86;
+    const signatureY = y;
     doc.addImage(record.customer_signature, "PNG", signatureX, signatureY, signatureWidth, signatureHeight);
     line(doc, signatureX, signatureY + signatureHeight + 12, signatureX + signatureWidth, signatureY + signatureHeight + 12, MUTED, 0.55);
     setText(doc, MUTED, 7, "bold");
     doc.text("ASSINATURA DO CLIENTE / REPRESENTANTE", signatureX + signatureWidth / 2, signatureY + signatureHeight + 28, { align: "center" });
     setText(doc, DARK, 8);
-    doc.text(valueOrDash(record.customer_name), signatureX + signatureWidth / 2, signatureY + signatureHeight + 43, { align: "center" });
-    return signatureY + signatureHeight + 58;
+    const nameLines = doc.splitTextToSize(valueOrDash(record.customer_name), signatureWidth) as string[];
+    y = signatureY + signatureHeight + 43;
+    for (const nameLine of nameLines) {
+      y = ensurePageSpace(doc, y, 12);
+      setText(doc, DARK, 8);
+      doc.text(nameLine, signatureX + signatureWidth / 2, y, { align: "center" });
+      y += 10;
+    }
+    return y + 15;
   } else {
     const signatureWidth = 260;
     const signatureX = MARGIN + (CONTENT_WIDTH - signatureWidth) / 2;
-    line(doc, signatureX, y + 150, signatureX + signatureWidth, y + 150, MUTED, 0.55);
+    line(doc, signatureX, y + 64, signatureX + signatureWidth, y + 64, MUTED, 0.55);
     setText(doc, MUTED, 7, "bold");
-    doc.text("ASSINATURA DO CLIENTE / REPRESENTANTE", signatureX + signatureWidth / 2, y + 166, { align: "center" });
-    return y + 184;
+    doc.text("ASSINATURA DO CLIENTE / REPRESENTANTE", signatureX + signatureWidth / 2, y + 80, { align: "center" });
+    return y + 98;
   }
 }
 
@@ -417,8 +444,8 @@ async function createServicePdf(machine: Machine, record: ServiceRecord) {
   });
 
   await drawHeader(doc, machine, record);
-  drawMachineData(doc, machine);
-  const nextY = drawServiceData(doc, record);
+  const machineY = drawMachineData(doc, machine);
+  const nextY = drawServiceData(doc, record, machineY);
   const attachmentY = drawAttachments(doc, record, nextY);
   const technicianY = drawTechnicianData(doc, record, attachmentY);
   if (record.service_type === "Visita técnica") drawSignatureData(doc, record, technicianY + 16);
