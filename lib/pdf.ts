@@ -88,6 +88,35 @@ function sectionTitle(doc: jsPDF, title: string, y: number) {
   line(doc, MARGIN, y + 9, PAGE_WIDTH - MARGIN, y + 9, BLUE, 1.2);
 }
 
+function wrappedFieldRow(doc: jsPDF, fields: { label: string; value: string | null | undefined; x: number; width: number }[], y: number) {
+  const lineHeight = 11.25;
+  setText(doc, DARK, 9);
+  const values = fields.map((field) => doc.splitTextToSize(valueOrDash(field.value), field.width) as string[]);
+  const totalLines = Math.max(...values.map((value) => value.length));
+  let offset = 0;
+
+  while (offset < totalLines) {
+    y = ensurePageSpace(doc, y, 34);
+    const availableLines = Math.max(1, Math.floor((CONTENT_BOTTOM - y - 22) / lineHeight) + 1);
+    const count = Math.min(totalLines - offset, availableLines);
+    const bottom = y + 22 + (count - 1) * lineHeight;
+
+    fields.forEach((field, index) => {
+      setText(doc, MUTED, 7, "bold");
+      doc.text(field.label.toUpperCase(), field.x, y);
+      setText(doc, DARK, 9);
+      const text = values[index].slice(offset, offset + count);
+      if (text.length) doc.text(text, field.x, y + 16, { lineHeightFactor: 1.25 });
+      line(doc, field.x, bottom, field.x + field.width, bottom, LINE, 0.55);
+    });
+
+    offset += count;
+    y = bottom + 31;
+  }
+
+  return y;
+}
+
 function continuationHeader(doc: jsPDF) {
   setText(doc, BLUE, 10, "bold");
   doc.text("Relatório de Atendimento Técnico", MARGIN, 48);
@@ -230,10 +259,10 @@ function drawServiceData(doc: jsPDF, record: ServiceRecord) {
   labelValue(doc, "Início", serviceDateTimeOrFallback(record.service_start, record.service_date), MARGIN, 361, col);
   labelValue(doc, "Fim", record.service_end, MARGIN + col + 12, 361, col);
   labelValue(doc, "Tipo de atendimento", record.service_type ?? "Acesso remoto", MARGIN + (col + 12) * 2, 361, col);
-  labelValue(doc, "Equipamento", record.equipment, MARGIN, 400, col);
-  labelValue(doc, "Motivo breve", record.issue_summary, MARGIN + col + 12, 400, CONTENT_WIDTH - col - 12);
-
-  let y = 453;
+  let y = wrappedFieldRow(doc, [
+    { label: "Equipamento", value: record.equipment, x: MARGIN, width: col },
+    { label: "Motivo breve", value: record.issue_summary, x: MARGIN + col + 12, width: CONTENT_WIDTH - col - 12 }
+  ], 400);
   y = flowTextSection(doc, "Solicitação do cliente / problema relatado", record.request, y);
   y = flowTextSection(doc, "Diagnóstico", record.diagnosis, y);
   y = flowTextSection(doc, "Serviço realizado", record.service_done, y);
