@@ -179,6 +179,12 @@ export async function POST(request: Request) {
         ? await admin.from("machines").update(machinePayload).eq("id", editingId).select().single()
         : await admin.from("machines").insert(machinePayload).select().single();
 
+      if (result.error?.code === "23505") {
+        const sameCodeAndModel = result.error.message.includes("machines_code_model_unique_not_blank");
+        return jsonError(sameCodeAndModel
+          ? "Já existe uma máquina cadastrada com este código e modelo."
+          : "Já existe uma máquina com a série, mecânica ou software informado.", 409);
+      }
       if (result.error || !result.data) return jsonError(result.error?.message ?? "Máquina não salva.", 500);
 
       if (canAccessCredentials(session.user)) {

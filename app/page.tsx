@@ -2792,14 +2792,15 @@ export default function Home() {
     ].filter(Boolean);
 
     const duplicate = machines.find((machine) => machine.id !== editingMachineId && (
-      (normalizedCode && machine.code?.trim().toUpperCase() === normalizedCode)
+      (normalizedCode && machine.code?.trim().toUpperCase() === normalizedCode
+        && (machine.model ?? "").trim().toUpperCase() === machineForm.model.trim().toUpperCase())
       || (normalizedSerial && machine.serial?.trim().toUpperCase() === normalizedSerial)
       || (normalizedMechanicalList && machine.mechanical_list?.trim().toUpperCase() === normalizedMechanicalList)
       || (normalizedSoftwareCode && machine.software_code?.trim().toUpperCase() === normalizedSoftwareCode)
     ));
 
     if (duplicate) {
-      setMessage(`Já existe uma máquina cadastrada com código, série, mecânica ou software informado: ${displayMachineCode(duplicate)}.`);
+      setMessage(`Já existe uma máquina cadastrada com o mesmo código e modelo, ou com a série, mecânica ou software informado: ${displayMachineCode(duplicate)}.`);
       return;
     }
 
@@ -4096,9 +4097,9 @@ export default function Home() {
                   <thead><tr>
                     <th><button className="sort-header" type="button" onClick={() => toggleMachineSort("code")}>Código <span>{sortMark(machineSort.key === "code", machineSort.direction)}</span></button></th>
                     <th><button className="sort-header" type="button" onClick={() => toggleMachineSort("model")}>Modelo <span>{sortMark(machineSort.key === "model", machineSort.direction)}</span></button></th>
+                    <th><button className="sort-header" type="button" onClick={() => toggleMachineSort("serial")}>Número série <span>{sortMark(machineSort.key === "serial", machineSort.direction)}</span></button></th>
                     <th><button className="sort-header" type="button" onClick={() => toggleMachineSort("client")}>Cliente <span>{sortMark(machineSort.key === "client", machineSort.direction)}</span></button></th>
                     <th><button className="sort-header" type="button" onClick={() => toggleMachineSort("unit_city")}>Unidade / Cidade <span>{sortMark(machineSort.key === "unit_city", machineSort.direction)}</span></button></th>
-                    <th><button className="sort-header" type="button" onClick={() => toggleMachineSort("manufacture_month")}>Fabricação <span>{sortMark(machineSort.key === "manufacture_month", machineSort.direction)}</span></button></th>
                     <th><button className="sort-header" type="button" onClick={() => toggleMachineSort("vm")}>VM <span>{sortMark(machineSort.key === "vm", machineSort.direction)}</span></button></th>
                     <th><button className="sort-header" type="button" onClick={() => toggleMachineSort("last_service")}>Último atendimento <span>{sortMark(machineSort.key === "last_service", machineSort.direction)}</span></button></th>
                   </tr></thead>
@@ -4107,9 +4108,9 @@ export default function Home() {
                       <tr key={machine.id}>
                         <td><button className="link-button" onClick={() => { setSelectedMachineId(machine.id); setHistoryFilter(""); setView("machineDetail"); }}>{displayMachineCode(machine)}</button></td>
                         <td>{machine.model || "-"}</td>
+                        <td>{machine.serial || "-"}</td>
                         <td>{machine.client || "-"}</td>
                         <td>{machine.unit_city || "-"}</td>
-                        <td>{formatMonthYear(machine.manufacture_month)}</td>
                         <td>{machine.vm || "-"}</td>
                         <td>{formatDate(lastServiceDate(machine))}</td>
                       </tr>
