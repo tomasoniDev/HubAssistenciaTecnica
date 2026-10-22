@@ -182,8 +182,8 @@ export async function POST(request: Request) {
       if (result.error?.code === "23505") {
         const sameCodeAndModel = result.error.message.includes("machines_code_model_unique_not_blank");
         return jsonError(sameCodeAndModel
-          ? "Já existe uma máquina cadastrada com este código e modelo."
-          : "Já existe uma máquina com a série, mecânica ou software informado.", 409);
+          ? "Já existe uma máquina cadastrada com este número de projeto e modelo."
+          : "O banco bloqueou o cadastro por uma restrição de duplicidade. Solicite ao administrador a atualização das migrações do Hub.", 409);
       }
       if (result.error || !result.data) return jsonError(result.error?.message ?? "Máquina não salva.", 500);
 

@@ -2791,16 +2791,13 @@ export default function Home() {
       validateIpv4Like(machineForm.vnc_ip, "IP de acesso VNC", { allowPort: true })
     ].filter(Boolean);
 
-    const duplicate = machines.find((machine) => machine.id !== editingMachineId && (
-      (normalizedCode && machine.code?.trim().toUpperCase() === normalizedCode
-        && (machine.model ?? "").trim().toUpperCase() === machineForm.model.trim().toUpperCase())
-      || (normalizedSerial && machine.serial?.trim().toUpperCase() === normalizedSerial)
-      || (normalizedMechanicalList && machine.mechanical_list?.trim().toUpperCase() === normalizedMechanicalList)
-      || (normalizedSoftwareCode && machine.software_code?.trim().toUpperCase() === normalizedSoftwareCode)
-    ));
+    const duplicate = machines.find((machine) => machine.id !== editingMachineId
+      && normalizedCode
+      && machine.code?.trim().toUpperCase() === normalizedCode
+      && (machine.model ?? "").trim().toUpperCase() === machineForm.model.trim().toUpperCase());
 
     if (duplicate) {
-      setMessage(`Já existe uma máquina cadastrada com o mesmo código e modelo, ou com a série, mecânica ou software informado: ${displayMachineCode(duplicate)}.`);
+      setMessage(`Já existe uma máquina cadastrada com o mesmo número de projeto e modelo: ${displayMachineCode(duplicate)} - ${duplicate.model || "Sem modelo"}.`);
       return;
     }
 
