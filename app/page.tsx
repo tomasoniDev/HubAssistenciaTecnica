@@ -2778,6 +2778,10 @@ export default function Home() {
     }
 
     const normalizedCode = formatMachineProjectCodeInput(machineForm.code).trim().toUpperCase();
+    if (!normalizedCode) {
+      setMessage("Informe o código da máquina para salvar o cadastro.");
+      return;
+    }
     const normalizedSerial = machineForm.serial.trim().toUpperCase();
     const normalizedMechanicalList = machineForm.mechanical_list.trim().toUpperCase();
     const normalizedSoftwareCode = formatMachineProjectCodeInput(machineForm.software_code).trim().toUpperCase();
@@ -4679,7 +4683,7 @@ export default function Home() {
                   <section className="form-card">
                     <h3>Dados da máquina</h3>
                     <div className="fields-grid">
-                      <label>Código<input disabled={machineMainFieldsDisabled} value={machineForm.code} onChange={(event) => updateMachineForm("code", formatMachineProjectCodeInput(event.target.value))} placeholder="T-665 9999" maxLength={10} /></label>
+                      <label>Código<input required disabled={machineMainFieldsDisabled} value={machineForm.code} onChange={(event) => updateMachineForm("code", formatMachineProjectCodeInput(event.target.value))} placeholder="T-665 9999" maxLength={10} /></label>
                       <label>Modelo<input disabled={machineMainFieldsDisabled} value={machineForm.model} onChange={(event) => updateMachineForm("model", event.target.value)} placeholder="Onduladeira, Dryend, ICV..." maxLength={120} /></label>
                       <label className="wide">Descrição<input disabled={machineMainFieldsDisabled} value={machineForm.description} onChange={(event) => updateMachineForm("description", event.target.value)} placeholder="Descrição curta do modelo da máquina" maxLength={160} /></label>
                       <label>Cliente<input disabled={machineMainFieldsDisabled} list="client-suggestions" value={machineForm.client} onChange={(event) => updateMachineForm("client", event.target.value)} placeholder="Nome da empresa" maxLength={160} /></label>

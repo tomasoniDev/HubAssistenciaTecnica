@@ -158,8 +158,11 @@ export async function POST(request: Request) {
     if (action === "saveMachine") {
       if (!canEditMachine(session.user.role)) return jsonError("Usuário sem permissão para alterar máquinas.", 403);
 
+      const machineCode = typeof payload.code === "string" ? upper(payload.code) : null;
+      if (!machineCode) return jsonError("Informe o código da máquina para salvar o cadastro.", 400);
+
       const machinePayload = {
-        code: upper(payload.code),
+        code: machineCode,
         model: text(payload.model),
         client: text(payload.client),
         unit_city: text(payload.unit_city),
