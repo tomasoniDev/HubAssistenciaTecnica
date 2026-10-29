@@ -5,16 +5,29 @@ import {
   authErrorResponse,
   canAccessCredentials,
   canEditMachine,
+  canDeleteServiceRecord,
   canEditSchedule,
   canEmitReports,
+  canModifyServiceRecord,
   canManageContracts,
   canManageUsers,
   canUseRemoteAccess,
+  FINALIZED_REPORT_LOCK_MESSAGE,
   hasFullAccess,
   isCorporateEmail,
+  isFinalizedServiceRecord,
   requireAuthorizedSession
 } from "@/lib/server-auth";
 import { createSupabaseAdminClient } from "@/lib/server-supabase";
+import {
+  CREDENTIAL_PASSWORD_FIELDS,
+  canDecryptSecret,
+  decryptSecret,
+  encryptSecret,
+  encryptionKeyFromEnv,
+  isEncryptedSecret,
+  isEncryptionConfigured
+} from "@/lib/credential-crypto";
 import { archiveServiceReportInSharePoint, safeBackupOperationalDataToSharePoint, uploadServiceReportToSharePoint } from "@/lib/sharepoint";
 
 type ActionBody = {
@@ -204,19 +217,36 @@ export async function POST(request: Request) {
 
       if (canAccessCredentials(session.user)) {
         const remoteAccess = machinePayload.remote_access;
-        const credentialPayload = {
-          machine_id: result.data.id,
-          vnc_ip: remoteAccess === "VNC" ? text(payload.vnc_ip) : null,
-          vnc_user: remoteAccess === "VNC" ? text(payload.vnc_user) : null,
-          vnc_password: remoteAccess === "VNC" ? text(payload.vnc_password) : null,
-          vnc_vm_password: remoteAccess === "VNC" ? text(payload.vnc_vm_password) : null,
-          vnc_notes: remoteAccess === "VNC" ? text(payload.vnc_notes) : null,
-          sinema_url: remoteAccess === "SINEMA" ? text(payload.sinema_url) : null,
-          sinema_user: remoteAccess === "SINEMA" ? text(payload.sinema_user) : null,
-          sinema_password: remoteAccess === "SINEMA" ? text(payload.sinema_password) : null,
-          sinema_notes: remoteAccess === "SINEMA" ? text(payload.sinema_notes) : null,
-          updated_at: new Date().toISOString()
+        const { data: storedCredentials } = await admin
+          .from("machine_credentials")
+          .select("vnc_password, vnc_vm_password, sinema_password")
+          .eq("machine_id", result.data.id)
+          .maybeSingle();
+        // Senha cifrada que não pôde ser lida (chave ausente ou trocada) nunca é apagada por um campo vazio.
+        const secretToStore = (field: (typeof CREDENTIAL_PASSWORD_FIELDS)[number], incoming: string | null) => {
+          const stored = (storedCredentials as Record<string, string | null> | null)?.[field] ?? null;
+          if (!incoming && isEncryptedSecret(stored) && !canDecryptSecret(stored)) return stored;
+          return encryptSecret(incoming);
         };
+        let credentialPayload;
+        try {
+          credentialPayload = {
+            machine_id: result.data.id,
+            vnc_ip: remoteAccess === "VNC" ? text(payload.vnc_ip) : null,
+            vnc_user: remoteAccess === "VNC" ? text(payload.vnc_user) : null,
+            vnc_password: remoteAccess === "VNC" ? secretToStore("vnc_password", text(payload.vnc_password)) : null,
+            vnc_vm_password: remoteAccess === "VNC" ? secretToStore("vnc_vm_password", text(payload.vnc_vm_password)) : null,
+            vnc_notes: remoteAccess === "VNC" ? text(payload.vnc_notes) : null,
+            sinema_url: remoteAccess === "SINEMA" ? text(payload.sinema_url) : null,
+            sinema_user: remoteAccess === "SINEMA" ? text(payload.sinema_user) : null,
+            sinema_password: remoteAccess === "SINEMA" ? secretToStore("sinema_password", text(payload.sinema_password)) : null,
+            sinema_notes: remoteAccess === "SINEMA" ? text(payload.sinema_notes) : null,
+            updated_at: new Date().toISOString()
+          };
+        } catch (error) {
+          console.error("Falha ao preparar credenciais para gravação", error);
+          return jsonError("Máquina salva, mas a chave de criptografia das senhas está inválida. Fale com o administrador.", 500);
+        }
         const credentialResult = await admin.from("machine_credentials").upsert(credentialPayload, { onConflict: "machine_id" });
         if (credentialResult.error) return jsonError("Máquina salva, mas as credenciais não foram atualizadas.", 500);
       }
@@ -451,11 +481,18 @@ export async function POST(request: Request) {
     if (action === "saveService") {
       if (!canEmitReports(session.user.role)) return jsonError("Usuário sem permissão para emitir relatórios.", 403);
       const editingId = id(payload.id);
+      let editedByAnotherAuthor = false;
+      let editedFinalized = false;
       if (editingId) {
-        const { data: existing } = await admin.from("service_records").select("created_by").eq("id", editingId).maybeSingle();
-        if (existing?.created_by !== session.userId) {
-          return jsonError("Este atendimento só pode ser alterado pelo usuário que lançou o registro.", 403);
+        const { data: existing } = await admin.from("service_records").select("created_by, report_status").eq("id", editingId).maybeSingle();
+        if (!existing) return jsonError("Atendimento não encontrado.", 404);
+        if (!canModifyServiceRecord(existing, { id: session.userId, role: session.user.role })) {
+          return jsonError(isFinalizedServiceRecord(existing)
+            ? FINALIZED_REPORT_LOCK_MESSAGE
+            : "Este atendimento só pode ser alterado pelo usuário que lançou o registro.", 403);
         }
+        editedByAnotherAuthor = existing.created_by !== session.userId;
+        editedFinalized = isFinalizedServiceRecord(existing);
       }
       const servicePayload = {
         machine_id: id(payload.machine_id),
@@ -482,8 +519,11 @@ export async function POST(request: Request) {
         report_recipients: serviceRecipients(payload.report_recipients)
       };
       if (!servicePayload.machine_id || !servicePayload.service_date) return jsonError("Máquina e data são obrigatórias.");
+      // Ao corrigir o relatório de outro técnico, o autor original é preservado.
+      const { technician_id, technician_name, technician_email, technician_role, technician_phone, ...payloadWithoutAuthor } = servicePayload;
+      void technician_id; void technician_name; void technician_email; void technician_role; void technician_phone;
       const result = editingId
-        ? await admin.from("service_records").update(servicePayload).eq("id", editingId).select().single()
+        ? await admin.from("service_records").update(editedByAnotherAuthor ? payloadWithoutAuthor : servicePayload).eq("id", editingId).select().single()
         : await admin.from("service_records").insert({ ...servicePayload, created_by: session.userId }).select().single();
       if (result.error || !result.data) return jsonError(result.error?.message ?? "Atendimento não salvo.", 500);
       await safeRecordAudit(admin, session, {
@@ -497,6 +537,8 @@ export async function POST(request: Request) {
           service_type: servicePayload.service_type,
           issue_summary: servicePayload.issue_summary,
           report_status: servicePayload.report_status,
+          edited_finalized: editedFinalized,
+          edited_by_another_author: editedByAnotherAuthor,
           support_technicians: servicePayload.support_technicians.map((technician) => technician.name)
         }
       });
@@ -562,8 +604,8 @@ export async function POST(request: Request) {
       if (mode === "archive") {
         const recordId = id(payload.recordId);
         if (recordId) {
-          const { data: existing } = await admin.from("service_records").select("created_by").eq("id", recordId).maybeSingle();
-          if (existing && !hasFullAccess(session.user.role) && existing.created_by !== session.userId) {
+          const { data: existing } = await admin.from("service_records").select("created_by, report_status").eq("id", recordId).maybeSingle();
+          if (existing && !canDeleteServiceRecord(existing, { id: session.userId, role: session.user.role })) {
             return jsonError("Este relatório só pode ser arquivado pelo autor ou por usuário com acesso total.", 403);
           }
         }
@@ -584,6 +626,45 @@ export async function POST(request: Request) {
       return jsonError("Ação do SharePoint não reconhecida.");
     }
 
+    if (action === "encryptStoredCredentials") {
+      if (session.user.role !== "Admin") return jsonError("Somente Admin pode criptografar as senhas armazenadas.", 403);
+      if (!isEncryptionConfigured()) {
+        return jsonError("Defina CREDENTIAL_ENCRYPTION_KEY nas variáveis da Vercel (e faça um novo deploy) antes de criptografar.", 400);
+      }
+      const key = encryptionKeyFromEnv();
+      const { data: rows, error: rowsError } = await admin
+        .from("machine_credentials")
+        .select("machine_id, vnc_password, vnc_vm_password, sinema_password");
+      if (rowsError) return jsonError("Não foi possível ler as credenciais armazenadas.", 500);
+
+      let encryptedCount = 0;
+      for (const row of (rows ?? []) as Array<Record<string, string | null>>) {
+        const changes: Record<string, string> = {};
+        for (const field of CREDENTIAL_PASSWORD_FIELDS) {
+          const value = row[field];
+          if (typeof value !== "string" || value === "" || isEncryptedSecret(value)) continue;
+          const encrypted = encryptSecret(value, key);
+          // Só grava se a senha cifrada volta idêntica; assim nenhuma senha é perdida.
+          if (!encrypted || decryptSecret(encrypted, key) !== value) {
+            return jsonError("A verificação da criptografia falhou. Nenhuma senha restante foi alterada.", 500);
+          }
+          changes[field] = encrypted;
+        }
+        if (!Object.keys(changes).length) continue;
+        const updateResult = await admin.from("machine_credentials").update(changes).eq("machine_id", row.machine_id);
+        if (updateResult.error) return jsonError("Falha ao gravar senhas criptografadas. O processo foi interrompido.", 500);
+        encryptedCount += Object.keys(changes).length;
+      }
+
+      await safeRecordAudit(admin, session, {
+        action: "security.credentials_encrypted",
+        entity: "machine_credentials",
+        entityLabel: "Senhas de acesso remoto",
+        details: { encrypted_fields: encryptedCount }
+      });
+      return NextResponse.json({ ok: true, data: { encrypted: encryptedCount } });
+    }
+
     if (action === "delete") {
       const table = String(payload.table ?? "");
       const rowId = id(payload.id);
@@ -597,9 +678,12 @@ export async function POST(request: Request) {
       if (table === "travel_schedules" && !canEditSchedule(session.user.role)) return jsonError("Usuário sem permissão para excluir cronograma.", 403);
       if (table === "support_contracts" && !canManageContracts(session.user.role)) return jsonError("Usuário sem permissão para excluir contratos.", 403);
       if (table === "service_records") {
-        const { data: existing } = await admin.from("service_records").select("created_by").eq("id", rowId).maybeSingle();
-        if (!hasFullAccess(session.user.role) && (!canEmitReports(session.user.role) || existing?.created_by !== session.userId)) {
-          return jsonError("Este atendimento só pode ser excluído pelo autor ou por usuário com acesso total.", 403);
+        const { data: existing } = await admin.from("service_records").select("created_by, report_status").eq("id", rowId).maybeSingle();
+        if (!existing) return jsonError("Atendimento não encontrado.", 404);
+        if (!canDeleteServiceRecord(existing, { id: session.userId, role: session.user.role })) {
+          return jsonError(isFinalizedServiceRecord(existing)
+            ? FINALIZED_REPORT_LOCK_MESSAGE
+            : "Este atendimento só pode ser excluído pelo autor ou por usuário com acesso total.", 403);
         }
       }
 

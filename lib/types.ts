@@ -269,4 +269,5 @@ export type AppAdminInfo = {
   deployment: AppDeploymentInfo;
   auditLogs: AppAuditLog[];
   secretRotation: AppSecretRotationInfo | null;
+  credentialEncryption?: { configured: boolean; plaintextCount: number };
 };

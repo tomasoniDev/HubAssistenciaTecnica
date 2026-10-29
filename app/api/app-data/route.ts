@@ -4,6 +4,7 @@ import { readdirSync, statSync } from "fs";
 import path from "path";
 import { authErrorResponse, canAccessCredentials, hasFullAccess, requireAuthorizedSession } from "@/lib/server-auth";
 import { createSupabaseAdminClient } from "@/lib/server-supabase";
+import { countPlaintextSecrets, decryptCredentialRow, isEncryptionConfigured } from "@/lib/credential-crypto";
 import type { AppAdminInfo, AppAuditLog, AppSecretRotationInfo, MachineCredential } from "@/lib/types";
 
 const MACHINE_SAFE_SELECT = `
@@ -30,6 +31,20 @@ const MACHINE_SAFE_SELECT = `
   machine_emails(*),
   service_records(*)
 `;
+
+// Consulta leve: traz os atendimentos sem anexos e sem assinatura (imagens em
+// base64). "first_attachment" só indica se há anexo. Se o banco recusar esta
+// forma de seleção, a rota cai automaticamente na consulta completa acima.
+const SERVICE_LIGHT_COLUMNS = [
+  "id", "machine_id", "technician_id", "technician_name", "technician_email", "technician_phone", "technician_role",
+  "support_technicians", "service_type", "service_date", "service_start", "service_end", "equipment", "issue_summary",
+  "request", "diagnosis", "service_done", "observations", "customer_name", "report_status", "report_recipients",
+  "created_by", "created_at", "updated_at", "first_attachment:attachments->0->>id"
+].join(", ");
+
+const MACHINE_LIGHT_SELECT: string = MACHINE_SAFE_SELECT.replace("service_records(*)", `service_records(${SERVICE_LIGHT_COLUMNS})`);
+
+type MachineRow = { id: string; service_records?: unknown } & Record<string, unknown>;
 
 const EMPTY_MACHINE_CREDENTIALS = {
   vnc_ip: null,
@@ -111,13 +126,15 @@ function secretRotationInfo(row?: { key?: string | null; value?: unknown; update
 function lightServiceRecords(rows: unknown) {
   if (!Array.isArray(rows)) return [];
   return rows.map((row) => {
-    const { attachments, customer_signature: signature, ...rest } = row as Record<string, unknown>;
+    const { attachments, customer_signature: signature, first_attachment: firstAttachment, ...rest } = row as Record<string, unknown>;
+    const fromLightQuery = "first_attachment" in (row as Record<string, unknown>);
     return {
       ...rest,
       attachments: null,
       customer_signature: null,
-      has_attachments: Array.isArray(attachments) && attachments.length > 0,
-      has_signature: Boolean(signature)
+      has_attachments: fromLightQuery ? Boolean(firstAttachment) : Array.isArray(attachments) && attachments.length > 0,
+      // Na consulta leve só visitas técnicas podem ter assinatura; o app confirma ao abrir.
+      has_signature: fromLightQuery ? rest.service_type === "Visita técnica" : Boolean(signature)
     };
   });
 }
@@ -128,14 +145,24 @@ export async function GET() {
     if (isDemoMode) return NextResponse.json(demoAppData());
     const admin = createSupabaseAdminClient();
 
-    const { data: machineRows, error: machineError } = await admin
+    let machineResult = await admin
       .from("machines")
-      .select(MACHINE_SAFE_SELECT)
+      .select(MACHINE_LIGHT_SELECT)
       .order("code", { ascending: true });
 
-    if (machineError) {
-      return NextResponse.json({ error: machineError.message }, { status: 500 });
+    if (machineResult.error) {
+      console.error("Consulta leve de máquinas falhou; usando a consulta completa", { message: machineResult.error.message });
+      machineResult = await admin
+        .from("machines")
+        .select(MACHINE_SAFE_SELECT)
+        .order("code", { ascending: true }) as unknown as typeof machineResult;
     }
+
+    if (machineResult.error) {
+      return NextResponse.json({ error: machineResult.error.message }, { status: 500 });
+    }
+
+    const machineRows = (machineResult.data ?? []) as unknown as MachineRow[];
 
     const machineIds = (machineRows ?? []).map((machine) => machine.id).filter(Boolean);
     const credentialRows: MachineCredential[] = [];
@@ -147,7 +174,7 @@ export async function GET() {
         .in("machine_id", machineIds);
 
       if (!credentialError) {
-        credentialRows.push(...((credentials ?? []) as MachineCredential[]));
+        credentialRows.push(...((credentials ?? []) as MachineCredential[]).map((row) => decryptCredentialRow(row)));
       }
     } else if (machineIds.length) {
       const { data: credentials, error: credentialError } = await admin
@@ -215,7 +242,15 @@ export async function GET() {
 
       auditWarning = auditResult.error?.message ?? null;
       settingsWarning = settingsResult.error?.message ?? null;
+      const credentialStatus = await admin
+        .from("machine_credentials")
+        .select("vnc_password, vnc_vm_password, sinema_password");
+
       adminInfo = {
+        credentialEncryption: {
+          configured: isEncryptionConfigured(),
+          plaintextCount: countPlaintextSecrets(credentialStatus.data ?? [])
+        },
         migrations: loadMigrationInfo(),
         deployment: deploymentInfo(),
         auditLogs: (auditResult.data ?? []) as AppAuditLog[],

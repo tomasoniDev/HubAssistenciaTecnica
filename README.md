@@ -34,3 +34,13 @@ O schema inicial está em `supabase/migrations/001_initial_schema.sql`.
 O envio automático de relatórios usa SMTP Office 365 pela rota `app/api/send-service-email`.
 
 Em produção, as credenciais devem ficar apenas nas variáveis de ambiente da Vercel.
+
+## Criptografia das senhas de acesso remoto
+
+As senhas VNC/SINEMA podem ser guardadas criptografadas (AES-256-GCM).
+
+1. Gere uma chave: `node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"`.
+2. Cadastre-a na Vercel como `CREDENTIAL_ENCRYPTION_KEY` e faça um novo deploy.
+3. Em **Administração > Criptografia das senhas**, use **Criptografar senhas existentes** (somente Admin).
+
+Guarde a chave em local seguro (cofre de senhas). **Sem ela, as senhas criptografadas não podem ser recuperadas**, e trocar a chave exige recriptografar tudo. Sem a variável definida, o sistema continua funcionando como antes (senhas em texto).

@@ -140,6 +140,7 @@ const demoTravel: TravelSchedule[] = [
 ];
 
 const demoAdminInfo: AppAdminInfo = {
+  credentialEncryption: { configured: false, plaintextCount: 3 },
   migrations: [{ version: "043", name: "Require Machine Code", file: "043_require_machine_code.sql", updated_at: NOW }],
   deployment: {
     environment: "demo",

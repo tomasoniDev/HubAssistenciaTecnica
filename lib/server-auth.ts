@@ -21,15 +21,19 @@ export type AuthorizedSession = AppSession & {
 };
 
 export {
+  FINALIZED_REPORT_LOCK_MESSAGE,
   canAccessCredentials,
+  canDeleteServiceRecord,
   canEditMachine,
   canEditSchedule,
   canEmitReports,
   canManageContracts,
   canManageUsers,
+  canModifyServiceRecord,
   canUseRemoteAccess,
   hasFullAccess,
-  isCorporateEmail
+  isCorporateEmail,
+  isFinalizedServiceRecord
 } from "@/lib/permissions";
 
 function base64Url(value: string) {

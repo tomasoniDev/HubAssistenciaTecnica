@@ -1,10 +1,23 @@
 "use client";
 
-import { ChangeEvent, FormEvent, MouseEvent as ReactMouseEvent, PointerEvent, useEffect, useMemo, useRef, useState } from "react";
+import { ChangeEvent, FormEvent, MouseEvent as ReactMouseEvent, PointerEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Image from "next/image";
 import { downloadServicePdf, servicePdfBase64, servicePdfFileName, servicePdfPreviewUrl } from "@/lib/pdf";
 import { hydrateServiceRecord, needsHeavyFields } from "@/lib/service-record-client";
-import { ALLOWED_EMAIL_DOMAINS, canEditMachine, canEditSchedule, canEmitReports, canManageContracts, canManageUsers, hasFullAccess, isCorporateEmail } from "@/lib/permissions";
+import { ToastStack, useToasts } from "@/components/toasts";
+import { UserMenu } from "@/components/user-menu";
+import { AdminView } from "@/components/views/AdminView";
+import { ConfirmDialog } from "@/components/views/ConfirmDialog";
+import { HelpModal } from "@/components/views/HelpModal";
+import { HomeView } from "@/components/views/HomeView";
+import { MachineDetailView } from "@/components/views/MachineDetailView";
+import { OverviewView } from "@/components/views/OverviewView";
+import { ProfileModal } from "@/components/views/ProfileModal";
+import { RegistryView } from "@/components/views/RegistryView";
+import { ScheduleView } from "@/components/views/ScheduleView";
+import { ServiceFormView } from "@/components/views/ServiceFormView";
+import { ServiceDateTimeField } from "@/components/service-datetime-field";
+import { ALLOWED_EMAIL_DOMAINS, FINALIZED_REPORT_LOCK_MESSAGE, canDeleteServiceRecord, canModifyServiceRecord, isFinalizedServiceRecord, canEditMachine, canEditSchedule, canEmitReports, canManageContracts, canManageUsers, hasFullAccess, isCorporateEmail } from "@/lib/permissions";
 import type { AppAdminInfo, AppAuditLog, AuthorizedUser, ChatContact, ChatConversation, ChatMessage, Machine, ServiceAttachment, ServiceRecord, ServiceTechnician, SupportContract, TravelSchedule, UserRole } from "@/lib/types";
 import {
   ActionMenuPosition,
@@ -201,6 +214,7 @@ export default function Home() {
   const machineFormSourceIdRef = useRef<string | null>(null);
   const [sessionReady, setSessionReady] = useState(false);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
+  useEffect(() => { authenticatedRef.current = isAuthenticated; }, [isAuthenticated]);
   const [currentUserId, setCurrentUserId] = useState("");
   const [currentUserEmail, setCurrentUserEmail] = useState("");
   const [currentUserName, setCurrentUserName] = useState("");
@@ -231,7 +245,14 @@ export default function Home() {
   const [currentUserCredentialAccessAllowed, setCurrentUserCredentialAccessAllowed] = useState(false);
   const [currentUserRole, setCurrentUserRole] = useState<UserRole | null>(null);
   const [selectedMachineId, setSelectedMachineId] = useState("");
-  const [message, setMessage] = useState(DEFAULT_MESSAGE);
+  const [message, setMessageText] = useState(DEFAULT_MESSAGE);
+  const { toasts, push: pushToast, dismiss: dismissToast } = useToasts();
+  const authenticatedRef = useRef(false);
+  // Toda mensagem do app também aparece como aviso flutuante (só com o usuário logado).
+  const setMessage = useCallback((text: string) => {
+    setMessageText(text);
+    if (authenticatedRef.current && text && text !== DEFAULT_MESSAGE && text !== "Acesso autorizado.") pushToast(text);
+  }, [pushToast]);
   const [machineFilter, setMachineFilter] = useState("");
   const [historyFilter, setHistoryFilter] = useState("");
   const [machineSort, setMachineSort] = useState<{ key: MachineSortKey; direction: SortDirection }>({ key: "last_service", direction: "desc" });
@@ -474,12 +495,17 @@ export default function Home() {
   const currentUserCanEditMachine = canEditMachine(currentUserRole);
   const currentUserCanManageContracts = canManageContracts(currentUserRole);
   const currentUserCanEmitReports = canEmitReports(currentUserRole);
+  const recordActor = { id: currentUserId, role: currentUserRole };
+  const canModifyRecord = (record: ServiceRecord) => canModifyServiceRecord(record, recordActor);
+  const canDeleteRecord = (record: ServiceRecord) => canDeleteServiceRecord(record, recordActor);
+  const lockMessage = (record: ServiceRecord, fallback: string) => isFinalizedServiceRecord(record) ? FINALIZED_REPORT_LOCK_MESSAGE : fallback;
   const currentUserCanEditSchedule = canEditSchedule(currentUserRole);
   const currentUserCanViewMachineDetailCards = !isAssemblyRole(currentUserRole) && currentUserRole !== "Controladoria" && currentUserRole !== "Comercial";
   const adminDeployment = adminInfo?.deployment;
   const adminMigrations = adminInfo?.migrations ?? [];
   const adminAuditLogs = adminInfo?.auditLogs ?? [];
   const adminSecretRotation = adminInfo?.secretRotation ?? null;
+  const adminCredentialEncryption = adminInfo?.credentialEncryption ?? null;
   const adminSecretNextRotation = addDays(adminSecretRotation?.rotated_at, adminSecretRotation?.rotation_days ?? 180);
   const adminSecretDaysRemaining = daysUntil(adminSecretNextRotation);
   const adminSecretStatus = secretRotationStatus(adminSecretDaysRemaining);
@@ -1131,6 +1157,24 @@ export default function Home() {
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
   }, [confirmDialog]);
+
+  async function encryptStoredCredentials() {
+    if (currentUserRole !== "Admin") {
+      setMessage("Somente Admin pode criptografar as senhas armazenadas.");
+      return;
+    }
+    const confirmed = await askConfirm("As senhas de acesso remoto que ainda estão em texto serão criptografadas. Guarde uma cópia da chave CREDENTIAL_ENCRYPTION_KEY: sem ela as senhas não podem ser recuperadas.", { title: "Criptografar senhas", confirmLabel: "Criptografar" });
+    if (!confirmed) return;
+
+    setMessage("Criptografando senhas armazenadas.");
+    try {
+      const result = await appAction<{ encrypted: number }>("encryptStoredCredentials");
+      await loadData();
+      setMessage(`Senhas criptografadas: ${result.data?.encrypted ?? 0}.`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Não foi possível criptografar as senhas.");
+    }
+  }
 
   async function resetClientSecretRotation() {
     if (!currentUserCanViewAdmin) {
@@ -2059,8 +2103,8 @@ export default function Home() {
       return;
     }
 
-    if (editingServiceRecord && editingServiceRecord.created_by !== currentUserId) {
-      setMessage("Este atendimento so pode ser alterado pelo usuario que lancou o registro.");
+    if (editingServiceRecord && !canModifyRecord(editingServiceRecord)) {
+      setMessage(lockMessage(editingServiceRecord, "Este atendimento so pode ser alterado pelo usuario que lancou o registro."));
       return;
     }
 
@@ -2176,8 +2220,8 @@ export default function Home() {
       setMessage("Seu perfil nao tem permissao para alterar relatorios.");
       return;
     }
-    if (sourceRecord.created_by !== currentUserId) {
-      setMessage("Este atendimento so pode ser alterado pelo usuario que lancou o registro.");
+    if (!canModifyRecord(sourceRecord)) {
+      setMessage(lockMessage(sourceRecord, "Este atendimento so pode ser alterado pelo usuario que lancou o registro."));
       return;
     }
 
@@ -2267,8 +2311,8 @@ export default function Home() {
   }
 
   async function deleteServiceRecord(record: ServiceRecord) {
-    if (!currentUserHasFullAccess && (!currentUserCanEmitReports || record.created_by !== currentUserId)) {
-      setMessage("Este atendimento so pode ser excluido pelo autor ou por usuario com acesso total.");
+    if (!canDeleteRecord(record)) {
+      setMessage(lockMessage(record, "Este atendimento so pode ser excluido pelo autor ou por usuario com acesso total."));
       return;
     }
     const deletingDraft = isServiceDraft(record);
@@ -2436,35 +2480,20 @@ export default function Home() {
           {(currentUserCanEditMachine || currentUserCanManageUsers || currentUserCanUseRemoteAccess) && <button className={`nav-item ${view === "registry" ? "active" : ""}`} onClick={() => { setRegistryTab(currentUserCanEditMachine ? "machines" : currentUserCanUseRemoteAccess ? "clients" : "users"); setView("registry"); }}><NavIcon name="registry" /><span>Cadastro</span></button>}
           {currentUserCanViewAdmin && <button className={`nav-item ${view === "admin" ? "active" : ""}`} onClick={() => setView("admin")}><NavIcon name="admin" /><span>Administração</span></button>}
         </nav>
-        <div className="user-menu">
-          <button className="user-menu-trigger" type="button" onClick={() => setUserMenuOpen((open) => !open)} aria-expanded={userMenuOpen}>
-            <span className="avatar">{initialsFromEmail(currentUserEmail)}</span>
-            <span className="user-meta">
-              <strong>{currentUserName || displayUserName(currentUserEmail)}</strong>
-              <small>{currentUserRole || "Usuário autorizado"}</small>
-              {currentUserCanUseRemoteAccess && (
-                <span className="remote-status-line">
-                  <span className={`remote-status-dot ${remoteAccessStatusClass(remoteAccessStatus)}`} />
-                  {remoteAccessStatus}
-                </span>
-              )}
-            </span>
-            <MoreIcon />
-          </button>
-          {userMenuOpen && (
-            <div className="user-menu-content">
-              {currentUserCanUseRemoteAccess && (
-                <>
-                  <button type="button" onClick={() => updateRemoteAccessStatus("Online")}><span className="menu-status-dot online" /> Online</button>
-                  <button type="button" onClick={() => updateRemoteAccessStatus("Ocupado")}><span className="menu-status-dot busy" /> Ocupado</button>
-                  <button type="button" onClick={() => updateRemoteAccessStatus("Offline")}><span className="menu-status-dot offline" /> Offline</button>
-                </>
-              )}
-              {canDownloadBackup && <button type="button" onClick={downloadMachinesBackup}><PdfDownloadIcon /> Backup SharePoint</button>}
-              <button type="button" onClick={signOut}><LogOutIcon /> Sair</button>
-            </div>
-          )}
-        </div>
+        <UserMenu
+          variant="side"
+          open={userMenuOpen}
+          onToggle={() => setUserMenuOpen((open) => !open)}
+          email={currentUserEmail}
+          name={currentUserName}
+          role={currentUserRole}
+          canUseRemoteAccess={currentUserCanUseRemoteAccess}
+          remoteAccessStatus={remoteAccessStatus}
+          onStatusChange={updateRemoteAccessStatus}
+          canDownloadBackup={canDownloadBackup}
+          onBackup={downloadMachinesBackup}
+          onSignOut={signOut}
+        />
       </aside>
 
       <section className="workspace">
@@ -2476,12 +2505,26 @@ export default function Home() {
             <button className="icon-button utility-action" type="button" title="Ajuda da tela" aria-label="Ajuda da tela" onClick={() => setHelpOpen(true)}><HelpIcon /></button>
             <button className="icon-button utility-action" type="button" title={theme === "dark" ? "Modo claro" : "Modo escuro"} aria-label={theme === "dark" ? "Modo claro" : "Modo escuro"} onClick={toggleTheme}>{theme === "dark" ? <SunIcon /> : <MoonIcon />}</button>
             {currentUserCanEmitReports && <button className="icon-button add-action" type="button" title="Novo atendimento" aria-label="Novo atendimento" onClick={() => startNewService()}><PlusIcon /></button>}
+            <UserMenu
+              variant="top"
+              open={userMenuOpen}
+              onToggle={() => setUserMenuOpen((open) => !open)}
+              email={currentUserEmail}
+              name={currentUserName}
+              role={currentUserRole}
+              canUseRemoteAccess={currentUserCanUseRemoteAccess}
+              remoteAccessStatus={remoteAccessStatus}
+              onStatusChange={updateRemoteAccessStatus}
+              canDownloadBackup={canDownloadBackup}
+              onBackup={downloadMachinesBackup}
+              onSignOut={signOut}
+            />
           </div>
         </header>
 
         <section className="status-band">
           <strong>{screenLegend(view, registryTab, selectedMachine)}</strong>
-          {message !== DEFAULT_MESSAGE && <span>{message}</span>}
+
         </section>
 
         {view === "chat" && currentUserCanUseRemoteAccess && (
@@ -2564,1147 +2607,19 @@ export default function Home() {
           </section>
         )}
 
-        {view === "overview" && (
-          <section className="overview-page view active">
-            <section className="kpi-grid">
-              <article className="kpi-card accent">
-                <span>Base instalada</span>
-                <strong>{overviewData.totalMachines}</strong>
-                <small>{overviewData.totalServices} atendimentos registrados</small>
-              </article>
-              <article className="kpi-card">
-                <span>Atendimentos no mês</span>
-                <strong>{overviewData.servicesThisMonth}</strong>
-                <small>{overviewData.totalServices ? `${percent(overviewData.servicesThisMonth, overviewData.totalServices)}% do histórico` : "Sem histórico"}</small>
-              </article>
-              <article className="kpi-card success">
-                <span>Contratos ativos</span>
-                <strong>{overviewData.activeContracts}</strong>
-                <small>{percent(overviewData.activeContracts, overviewData.totalMachines)}% da base</small>
-              </article>
-              <article className="kpi-card warning">
-                <span>Contratos a vencer</span>
-                <strong>{overviewData.expiringContracts}</strong>
-                <small>Próximos 90 dias</small>
-              </article>
-              <article className="kpi-card">
-                <span>Cobertura remota</span>
-                <strong>{overviewData.remoteCoverage}%</strong>
-                <small>SINEMA ou VNC cadastrados</small>
-              </article>
-              <article className="kpi-card danger">
-                <span>Atenção operacional</span>
-                <strong>{overviewData.staleMachines}</strong>
-                <small>Sem atendimento há mais de 180 dias ou sem histórico</small>
-              </article>
-            </section>
+        <OverviewView focusedMapState={focusedMapState} focusOverviewMapState={focusOverviewMapState} mapMode={mapMode} openServiceRecord={openServiceRecord} overviewData={overviewData} overviewMapRef={overviewMapRef} setHistoryFilter={setHistoryFilter} setSelectedMachineId={setSelectedMachineId} setView={setView} view={view} />
 
-            <section className="overview-grid">
-              <article className="dashboard-card chart-card wide-card">
-                <div className="card-title"><DetailIcon type="history" /><h3>Tendência de atendimentos</h3></div>
-                <div className="trend-chart">
-                  {overviewData.serviceTrend.map((item) => {
-                    const max = Math.max(...overviewData.serviceTrend.map((entry) => entry.value), 1);
-                    return (
-                      <div key={item.name} className="trend-bar">
-                        <span>{item.value}</span>
-                        <div style={{ height: `${Math.max(8, (item.value / max) * 100)}%` }} />
-                        <small>{item.name}</small>
-                      </div>
-                    );
-                  })}
-                </div>
-              </article>
+        <AdminView adminAuditLogs={adminAuditLogs} adminCredentialEncryption={adminCredentialEncryption} adminDeployment={adminDeployment} adminMigrations={adminMigrations} adminSecretDaysRemaining={adminSecretDaysRemaining} adminSecretNextRotation={adminSecretNextRotation} adminSecretRotation={adminSecretRotation} adminSecretStatus={adminSecretStatus} authorizedUsers={authorizedUsers} chatContacts={chatContacts} chatConversations={chatConversations} currentUserCanViewAdmin={currentUserCanViewAdmin} currentUserRole={currentUserRole} encryptStoredCredentials={encryptStoredCredentials} machines={machines} overviewData={overviewData} resetClientSecretRotation={resetClientSecretRotation} supportContracts={supportContracts} view={view} />
 
-              <article className="dashboard-card">
-                <div className="card-title"><DetailIcon type="remote" /><h3>Acesso remoto</h3></div>
-                <div className="bar-list">
-                  {overviewData.byAccess.map((item) => (
-                    <div key={item.name}>
-                      <span>{item.name}</span><strong>{item.value}</strong>
-                      <em><i style={{ width: `${percent(item.value, overviewData.totalMachines)}%` }} /></em>
-                    </div>
-                  ))}
-                </div>
-              </article>
+        <HomeView filteredMachines={filteredMachines} machineFilter={machineFilter} machineSort={machineSort} setHistoryFilter={setHistoryFilter} setMachineFilter={setMachineFilter} setSelectedMachineId={setSelectedMachineId} setView={setView} toggleMachineSort={toggleMachineSort} view={view} />
 
-              <article className="dashboard-card">
-                <div className="card-title"><DetailIcon type="check" /><h3>Contratos</h3></div>
-                <div className="contract-summary-list">
-                  <div><span>Ativos</span><strong>{overviewData.activeContracts}</strong></div>
-                  <div><span>Em negociação</span><strong>{overviewData.negotiatingContracts}</strong></div>
-                  <div><span>A vencer em 90 dias</span><strong>{overviewData.expiringContracts}</strong></div>
-                  <div><span>Vencidos</span><strong>{overviewData.expiredContracts}</strong></div>
-                </div>
-                <div className="bar-list compact">
-                  {overviewData.byContractType.map((item) => (
-                    <div key={item.name}>
-                      <span>{item.name}</span><strong>{item.value}</strong>
-                      <em><i style={{ width: `${percent(item.value, overviewData.activeContracts)}%` }} /></em>
-                    </div>
-                  ))}
-                </div>
-              </article>
+        <ScheduleView actionMenuPosition={actionMenuPosition} completedTravelSchedules={completedTravelSchedules} completedTravelSort={completedTravelSort} contractForm={contractForm} currentUserCanEditSchedule={currentUserCanEditSchedule} currentUserCanManageContracts={currentUserCanManageContracts} deleteSupportContract={deleteSupportContract} deleteTravelSchedule={deleteTravelSchedule} editingContractId={editingContractId} editingTravelId={editingTravelId} editSupportContract={editSupportContract} editTravelSchedule={editTravelSchedule} machines={machines} openActionMenu={openActionMenu} openTravelSchedules={openTravelSchedules} saveSupportContract={saveSupportContract} saveTravelSchedule={saveTravelSchedule} scheduleTab={scheduleTab} setContractForm={setContractForm} setEditingContractId={setEditingContractId} setEditingTravelId={setEditingTravelId} setOpenActionMenu={setOpenActionMenu} setScheduleTab={setScheduleTab} setTravelForm={setTravelForm} supportContracts={supportContracts} toggleActionMenu={toggleActionMenu} toggleCompletedTravelSort={toggleCompletedTravelSort} toggleTravelSort={toggleTravelSort} travelCodeSuggestions={travelCodeSuggestions} travelForm={travelForm} travelSort={travelSort} updateContractMachine={updateContractMachine} updateContractSerial={updateContractSerial} view={view} />
 
-              <article className="dashboard-card">
-                <div className="card-title"><DetailIcon type="software" /><h3>Modelos</h3></div>
-                <div className="bar-list">
-                  {overviewData.byModel.map((item) => (
-                    <div key={item.name}>
-                      <span>{item.name}</span><strong>{item.value}</strong>
-                      <em><i style={{ width: `${percent(item.value, overviewData.totalMachines)}%` }} /></em>
-                    </div>
-                  ))}
-                </div>
-              </article>
+        <MachineDetailView actionMenuPosition={actionMenuPosition} canDeleteRecord={canDeleteRecord} canModifyRecord={canModifyRecord} currentUserCanAccessCredentials={currentUserCanAccessCredentials} currentUserCanEditMachine={currentUserCanEditMachine} currentUserCanEmitReports={currentUserCanEmitReports} currentUserCanViewMachineDetailCards={currentUserCanViewMachineDetailCards} currentUserId={currentUserId} deleteServiceRecord={deleteServiceRecord} filteredHistory={filteredHistory} historyFilter={historyFilter} historySort={historySort} openActionMenu={openActionMenu} openServiceDraftPreview={openServiceDraftPreview} openServiceRecord={openServiceRecord} pdfReadyServiceRecord={pdfReadyServiceRecord} selectedMachine={selectedMachine} selectedMachineAccess={selectedMachineAccess} selectedMachineContract={selectedMachineContract} selectedMachineContractDays={selectedMachineContractDays} selectedMachineContractStatus={selectedMachineContractStatus} selectedMachineDraftReports={selectedMachineDraftReports} selectedMachineHasContractInfo={selectedMachineHasContractInfo} selectedMachineRecentHistory={selectedMachineRecentHistory} setEditingMachineId={setEditingMachineId} setHistoryFilter={setHistoryFilter} setOpenActionMenu={setOpenActionMenu} setRegistryTab={setRegistryTab} setView={setView} showFullHistory={showFullHistory} startNewService={startNewService} startServiceEdit={startServiceEdit} toggleActionMenu={toggleActionMenu} toggleHistorySort={toggleHistorySort} view={view} />
 
-              <article className="dashboard-card">
-                <div className="card-title"><DetailIcon type="software" /><h3>Softwares por VM</h3></div>
-                <div className="bar-list">
-                  {overviewData.byVmSoftware.length ? overviewData.byVmSoftware.map((item) => (
-                    <div key={item.name}>
-                      <span>{item.name}</span><strong>{item.value}</strong>
-                      <em><i style={{ width: `${percent(item.value, Math.max(...overviewData.byVmSoftware.map((entry) => entry.value), 1))}%` }} /></em>
-                    </div>
-                  )) : <p className="empty-card-note">Nenhum código de software com VM cadastrada.</p>}
-                </div>
-              </article>
+        <ServiceFormView addServiceAttachmentFiles={addServiceAttachmentFiles} authorizedUsers={authorizedUsers} clearSignature={clearSignature} closeSignaturePad={closeSignaturePad} currentUserEmail={currentUserEmail} currentUserId={currentUserId} currentUserName={currentUserName} drawSignature={drawSignature} editingServiceRecord={editingServiceRecord} finishSignature={finishSignature} machines={machines} openSignaturePad={openSignaturePad} removeServiceAttachment={removeServiceAttachment} saveService={saveService} selectServiceEmailSuggestion={selectServiceEmailSuggestion} serviceAttachments={serviceAttachments} serviceEmailSuggestions={serviceEmailSuggestions} serviceMachineLookupInput={serviceMachineLookupInput} serviceMachineLookupInvalid={serviceMachineLookupInvalid} serviceRecipientsInput={serviceRecipientsInput} serviceRecipientSuggestionsOpen={serviceRecipientSuggestionsOpen} serviceType={serviceType} setServiceMachineLookupInput={setServiceMachineLookupInput} setServiceMachineTouched={setServiceMachineTouched} setServiceRecipientsInput={setServiceRecipientsInput} setServiceRecipientSuggestionsOpen={setServiceRecipientSuggestionsOpen} setSupportTechniciansInput={setSupportTechniciansInput} signatureCanvasRef={signatureCanvasRef} signatureExpanded={signatureExpanded} startNewService={startNewService} startSignature={startSignature} supportTechniciansInput={supportTechniciansInput} updateServiceAttachmentCaption={updateServiceAttachmentCaption} updateServiceType={updateServiceType} view={view} />
 
-              <article className="dashboard-card geo-card">
-                <div className="card-title"><DetailIcon type="location" /><h3>Geolocalização</h3><span className="soft-pill">Estados / cidades</span></div>
-                <div className="geo-panel">
-                  <div className={`real-map ${mapMode === "fallback" ? "fallback-map" : ""}`} ref={overviewMapRef} aria-label="Mapa de máquinas por estado e cidade">
-                    {mapMode !== "leaflet" && (
-                      <div className="map-fallback">
-                        <span className="map-label north">Brasil</span>
-                        <span className="map-label south">Sul / Sudeste</span>
-                        {overviewData.geoStates.map((item) => {
-                          const center = STATE_CENTERS[item.state];
-                          if (!center) return null;
-                          return (
-                            <button
-                              key={item.state}
-                              className={`map-fallback-marker ${focusedMapState === item.state ? "active" : ""}`}
-                              style={mapPointPosition(center)}
-                              type="button"
-                              title={`${item.state}: ${item.value} máquina${item.value === 1 ? "" : "s"}`}
-                              onClick={() => focusOverviewMapState(item.state)}
-                            >
-                              <span>{item.state}</span>
-                              <strong>{item.value}</strong>
-                            </button>
-                          );
-                        })}
-                        {mapMode === "loading" && <em>Carregando mapa...</em>}
-                      </div>
-                    )}
-                  </div>
-                  <div className="state-map-list">
-                    {overviewData.byState.map((item) => (
-                      <button
-                        key={item.name}
-                        className={focusedMapState === item.name ? "active" : ""}
-                        type="button"
-                        onClick={() => focusOverviewMapState(item.name)}
-                      >
-                        <span>{item.name}</span>
-                        <strong>{item.value}</strong>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              </article>
-
-              <article className="dashboard-card">
-                <div className="card-title"><DetailIcon type="client" /><h3>Clientes com mais máquinas</h3></div>
-                <div className="bar-list">
-                  {overviewData.byClient.map((item) => (
-                    <div key={item.name}>
-                      <span>{item.name}</span><strong>{item.value}</strong>
-                      <em><i style={{ width: `${percent(item.value, overviewData.totalMachines)}%` }} /></em>
-                    </div>
-                  ))}
-                </div>
-              </article>
-
-              <article className="dashboard-card">
-                <div className="card-title"><DetailIcon type="history" /><h3>Clientes mais atendidos</h3></div>
-                <div className="bar-list">
-                  {overviewData.byClientServices.map((item) => (
-                    <div key={item.name}>
-                      <span>{item.name}</span><strong>{item.value}</strong>
-                      <em><i style={{ width: `${percent(item.value, overviewData.totalServices)}%` }} /></em>
-                    </div>
-                  ))}
-                </div>
-              </article>
-
-              <article className="dashboard-card service-type-card">
-                <div className="card-title"><DetailIcon type="info" /><h3>Tipo de atendimento</h3></div>
-                <div className="donut-panel">
-                  <div className="donut" style={{ ["--value" as string]: `${percent(overviewData.byServiceType.find((item) => item.name === "Acesso remoto")?.value ?? 0, overviewData.totalServices)}%` }}>
-                    <strong>{percent(overviewData.byServiceType.find((item) => item.name === "Acesso remoto")?.value ?? 0, overviewData.totalServices)}%</strong>
-                    <span>Remoto</span>
-                  </div>
-                  <div className="mini-list">
-                    {overviewData.byServiceType.map((item) => <div key={item.name}><span>{item.name}</span><strong>{item.value}</strong></div>)}
-                  </div>
-                </div>
-              </article>
-
-              <article className="dashboard-card overview-table-card service-rank-card">
-                <div className="card-title"><DetailIcon type="history" /><h3>Máquinas com mais atendimentos</h3></div>
-                <div className="overview-table">
-                  {overviewData.topMachinesByService.map(({ machine, value }) => (
-                    <button key={machine.id} type="button" onClick={() => { setSelectedMachineId(machine.id); setHistoryFilter(""); setView("machineDetail"); }}>
-                      <span>{displayMachineCode(machine)}</span>
-                      <em>{machine.client || "-"}</em>
-                      <strong>{value}</strong>
-                    </button>
-                  ))}
-                </div>
-              </article>
-
-              <article className="dashboard-card overview-table-card attention-rank-card">
-                <div className="card-title"><DetailIcon type="alert" /><h3>Máquinas para atenção</h3></div>
-                <div className="overview-table">
-                  {overviewData.machineAttention.map(({ machine, lastDate, days }) => (
-                    <button key={machine.id} type="button" onClick={() => { setSelectedMachineId(machine.id); setHistoryFilter(""); setView("machineDetail"); }}>
-                      <span>{displayMachineCode(machine)}</span>
-                      <em>{lastDate ? `Último: ${formatDate(lastDate)}` : "Sem histórico"}</em>
-                      <strong>{days === null ? "-" : `${days}d`}</strong>
-                    </button>
-                  ))}
-                </div>
-              </article>
-
-              <article className="dashboard-card overview-table-card recent-rank-card">
-                <div className="card-title"><DetailIcon type="detail" /><h3>Últimos atendimentos</h3></div>
-                <div className="overview-table">
-                  {overviewData.recentServices.map(({ machine, record }) => (
-                    <button key={record.id} type="button" onClick={() => { setSelectedMachineId(machine.id); void openServiceRecord(record); }}>
-                      <span>{record.issue_summary || record.equipment || "Atendimento"}</span>
-                      <em>{displayMachineCode(machine)} - {formatDate(record.service_date)}</em>
-                      <strong>{normalizeServiceType(record.service_type).replace("Acesso remoto", "Remoto").replace("Visita técnica", "Visita")}</strong>
-                    </button>
-                  ))}
-                </div>
-              </article>
-            </section>
-          </section>
-        )}
-
-        {view === "admin" && currentUserCanViewAdmin && (
-          <section className="admin-page view active">
-            <section className="kpi-grid">
-              <article className="kpi-card accent">
-                <span>Usuários autorizados</span>
-                <strong>{authorizedUsers.length}</strong>
-                <small>{authorizedUsers.filter((user) => hasFullAccess(user.role)).length} com acesso total</small>
-              </article>
-              <article className="kpi-card">
-                <span>Máquinas cadastradas</span>
-                <strong>{machines.length}</strong>
-                <small>{machines.filter((machine) => machine.updated_at).length} registros monitorados</small>
-              </article>
-              <article className="kpi-card">
-                <span>Relatórios</span>
-                <strong>{overviewData.totalServices}</strong>
-                <small>{overviewData.servicesThisMonth} no mês atual</small>
-              </article>
-              <article className="kpi-card success">
-                <span>Contratos</span>
-                <strong>{supportContracts.length}</strong>
-                <small>{overviewData.activeContracts} ativos</small>
-              </article>
-              <article className="kpi-card warning">
-                <span>Migrations locais</span>
-                <strong>{adminMigrations.length}</strong>
-                <small>Últimas versionadas</small>
-              </article>
-              <article className={`kpi-card ${adminSecretStatus}`}>
-                <span>CLIENT_SECRET</span>
-                <strong>{adminSecretDaysRemaining === null ? "-" : adminSecretDaysRemaining}</strong>
-                <small>{adminSecretDaysRemaining === null ? "Rotação não configurada" : "dias para troca"}</small>
-              </article>
-              <article className="kpi-card">
-                <span>Eventos auditados</span>
-                <strong>{adminAuditLogs.length}</strong>
-                <small>Últimos registros carregados</small>
-              </article>
-            </section>
-
-            <section className="admin-grid">
-              <article className="dashboard-card admin-info-card">
-                <div className="card-title"><DetailIcon type="software" /><h3>Deploy e ambiente</h3></div>
-                <div className="admin-info-list">
-                  <div><span>Ambiente</span><strong>{adminDeployment?.environment || "-"}</strong></div>
-                  <div><span>URL</span><strong>{adminDeployment?.url || "-"}</strong></div>
-                  <div><span>Commit</span><strong>{shortCommit(adminDeployment?.commit_sha)}</strong></div>
-                  <div><span>Mensagem</span><strong title={adminDeployment?.commit_message || ""}>{adminDeployment?.commit_message || "-"}</strong></div>
-                  <div><span>Autor</span><strong>{adminDeployment?.commit_author || "-"}</strong></div>
-                  <div><span>Região</span><strong>{adminDeployment?.region || "-"}</strong></div>
-                  <div><span>Runtime</span><strong>{adminDeployment?.node_env || "-"}</strong></div>
-                  <div><span>Leitura</span><strong>{formatLongDateTime(adminDeployment?.generated_at)}</strong></div>
-                </div>
-              </article>
-
-              <article className={`dashboard-card admin-info-card secret-rotation-card ${adminSecretStatus}`}>
-                <div className="card-title"><DetailIcon type="alert" /><h3>Rotação CLIENT_SECRET</h3></div>
-                <div className="admin-info-list">
-                  <div><span>Integração</span><strong>{adminSecretRotation?.label || "CLIENT_SECRET SharePoint"}</strong></div>
-                  <div><span>Última troca</span><strong>{formatDate(adminSecretRotation?.rotated_at)}</strong></div>
-                  <div><span>Próxima troca</span><strong>{formatDate(adminSecretNextRotation)}</strong></div>
-                  <div><span>Ciclo</span><strong>{adminSecretRotation?.rotation_days ?? 180} dias</strong></div>
-                  <div><span>Status</span><strong>{secretRotationMessage(adminSecretDaysRemaining)}</strong></div>
-                </div>
-                <button className="button ghost" type="button" onClick={() => void resetClientSecretRotation()}>Resetar contagem</button>
-              </article>
-
-              <article className="dashboard-card admin-info-card">
-                <div className="card-title"><DetailIcon type="history" /><h3>Migrations recentes</h3></div>
-                <div className="admin-migration-list">
-                  {adminMigrations.length ? adminMigrations.slice(0, 8).map((migration) => (
-                    <div key={migration.file}>
-                      <span>{migration.version}</span>
-                      <strong title={migration.file}>{migration.name || migration.file}</strong>
-                      <small>{formatLongDateTime(migration.updated_at)}</small>
-                    </div>
-                  )) : <p className="empty-card-note">Nenhuma migration local encontrada.</p>}
-                </div>
-              </article>
-
-              <article className="dashboard-card admin-info-card">
-                <div className="card-title"><DetailIcon type="check" /><h3>Permissões e módulos</h3></div>
-                <div className="admin-info-list">
-                  <div><span>Admin</span><strong>{authorizedUsers.filter((user) => user.role === "Admin").length}</strong></div>
-                  <div><span>Diretoria</span><strong>{authorizedUsers.filter((user) => user.role === "Diretoria").length}</strong></div>
-                  <div><span>Montagens</span><strong>{authorizedUsers.filter((user) => isAssemblyRole(user.role)).length}</strong></div>
-                  <div><span>Controladoria</span><strong>{authorizedUsers.filter((user) => user.role === "Controladoria").length}</strong></div>
-                  <div><span>Acesso Remoto</span><strong>{authorizedUsers.filter((user) => user.remote_access_allowed).length}</strong></div>
-                  <div><span>Acesso a senhas</span><strong>{authorizedUsers.filter((user) => user.credential_access_allowed).length}</strong></div>
-                  <div><span>Conversas</span><strong>{chatConversations.length}</strong></div>
-                  <div><span>Clientes do chat</span><strong>{chatContacts.length}</strong></div>
-                </div>
-              </article>
-
-              <article className="dashboard-card admin-audit-card admin-wide-card">
-                <div className="card-title"><DetailIcon type="detail" /><h3>Últimas ações dos usuários</h3></div>
-                <div className="admin-audit-list">
-                  {adminAuditLogs.length ? adminAuditLogs.map((log) => (
-                    <article key={log.id} className="admin-audit-item">
-                      <time>{formatLongDateTime(log.created_at)}</time>
-                      <div>
-                        <strong>{auditActionLabel(log.action)}</strong>
-                        <span>{auditEntityLabel(log.entity)} · {log.entity_label || auditDetailsSummary(log)}</span>
-                        <p>{auditDetailsSummary(log)}</p>
-                      </div>
-                      <small>{log.user_name || displayUserName(log.user_email || "")}<br />{log.user_role || "-"}</small>
-                    </article>
-                  )) : (
-                    <p className="empty-card-note">
-                      Nenhuma ação auditada ainda. Aplique a migration 035_admin_audit_logs.sql para iniciar o registro das próximas operações.
-                    </p>
-                  )}
-                </div>
-              </article>
-            </section>
-          </section>
-        )}
-
-        {view === "home" && (
-          <section className="view active">
-            <div className="search-panel">
-              <label>Filtrar máquinas<input value={machineFilter} onChange={(event) => setMachineFilter(event.target.value)} placeholder="Código, modelo, cliente..." /></label>
-            </div>
-            <section className="table-panel">
-              <div className="section-header"><h2>Máquinas cadastradas</h2><span>{filteredMachines.length} registros</span></div>
-              <div className="table-wrap">
-                <table className="home-table">
-                  <thead><tr>
-                    <th><button className="sort-header" type="button" onClick={() => toggleMachineSort("code")}>Código <span>{sortMark(machineSort.key === "code", machineSort.direction)}</span></button></th>
-                    <th><button className="sort-header" type="button" onClick={() => toggleMachineSort("model")}>Modelo <span>{sortMark(machineSort.key === "model", machineSort.direction)}</span></button></th>
-                    <th><button className="sort-header" type="button" onClick={() => toggleMachineSort("serial")}>Número série <span>{sortMark(machineSort.key === "serial", machineSort.direction)}</span></button></th>
-                    <th><button className="sort-header" type="button" onClick={() => toggleMachineSort("client")}>Cliente <span>{sortMark(machineSort.key === "client", machineSort.direction)}</span></button></th>
-                    <th><button className="sort-header" type="button" onClick={() => toggleMachineSort("unit_city")}>Unidade / Cidade <span>{sortMark(machineSort.key === "unit_city", machineSort.direction)}</span></button></th>
-                    <th><button className="sort-header" type="button" onClick={() => toggleMachineSort("vm")}>VM <span>{sortMark(machineSort.key === "vm", machineSort.direction)}</span></button></th>
-                    <th><button className="sort-header" type="button" onClick={() => toggleMachineSort("last_service")}>Último atendimento <span>{sortMark(machineSort.key === "last_service", machineSort.direction)}</span></button></th>
-                  </tr></thead>
-                  <tbody>
-                    {filteredMachines.map((machine) => (
-                      <tr key={machine.id}>
-                        <td><button className="link-button" onClick={() => { setSelectedMachineId(machine.id); setHistoryFilter(""); setView("machineDetail"); }}>{displayMachineCode(machine)}</button></td>
-                        <td>{machine.model || "-"}</td>
-                        <td>{machine.serial || "-"}</td>
-                        <td>{machine.client || "-"}</td>
-                        <td>{machine.unit_city || "-"}</td>
-                        <td>{machine.vm || "-"}</td>
-                        <td>{formatDate(lastServiceDate(machine))}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </section>
-          </section>
-        )}
-
-        {view === "schedule" && (
-          <section className="view active schedule-page">
-            {currentUserCanManageContracts && (
-              <section className="table-panel">
-                <div className="section-header">
-                  <h2>Cronograma</h2>
-                  <div className="segmented-control" aria-label="Tipo de registro">
-                    <button className={scheduleTab === "travel" ? "active" : ""} type="button" onClick={() => setScheduleTab("travel")}>Registro de viagens</button>
-                    <button className={scheduleTab === "contracts" ? "active" : ""} type="button" onClick={() => setScheduleTab("contracts")}>Contratos</button>
-                  </div>
-                </div>
-              </section>
-            )}
-
-            {scheduleTab === "travel" && currentUserCanEditSchedule && (
-              <form className="form-panel" onSubmit={saveTravelSchedule}>
-                <div className="section-header">
-                  <h2>{editingTravelId ? "Alterar viagem" : "Registrar viagem"}</h2>
-                  <div className="actions-row">
-                    {editingTravelId && <button className="button ghost" type="button" onClick={() => { setEditingTravelId(""); setTravelForm(EMPTY_TRAVEL_FORM); }}>Cancelar</button>}
-                    <button className="icon-button save-action" title="Salvar cronograma" aria-label="Salvar cronograma"><SaveIcon /></button>
-                  </div>
-                </div>
-                <div className="fields-grid">
-                  <label>Data de início<input value={travelForm.start_date} onChange={(event) => setTravelForm((current) => ({ ...current, start_date: /^a/i.test(event.target.value) ? event.target.value : formatDayMonthInput(event.target.value) }))} placeholder="dd/mm ou A definir" maxLength={10} /></label>
-                  <label>Data de fim<input value={travelForm.end_date} onChange={(event) => setTravelForm((current) => ({ ...current, end_date: /^a/i.test(event.target.value) ? event.target.value : formatDayMonthInput(event.target.value) }))} placeholder="dd/mm ou A definir" maxLength={10} /></label>
-                  <label>Código do cliente<input list="travel-code-suggestions" value={travelForm.code} onChange={(event) => setTravelForm((current) => ({ ...current, code: formatTravelClientCodeInput(event.target.value) }))} placeholder="Cxxx" maxLength={4} /></label>
-                  <datalist id="travel-code-suggestions">{travelCodeSuggestions.map((code) => <option key={code} value={code} />)}</datalist>
-                  <label>Cliente<input list="client-suggestions" value={travelForm.client} onChange={(event) => setTravelForm((current) => ({ ...current, client: event.target.value }))} /></label>
-                  <label>Técnicos<input value={travelForm.technicians} onChange={(event) => setTravelForm((current) => ({ ...current, technicians: event.target.value }))} placeholder="Nomes separados por vírgula" /></label>
-                  <label>Status<input list="travel-status-suggestions" value={travelForm.status} onChange={(event) => setTravelForm((current) => ({ ...current, status: event.target.value }))} placeholder="Digite ou selecione" /></label>
-                  <datalist id="travel-status-suggestions">
-                    {TRAVEL_STATUS_OPTIONS.map((option) => <option key={option} value={option} />)}
-                  </datalist>
-                  <label className="wide">Motivo<textarea rows={3} value={travelForm.reason} onChange={(event) => setTravelForm((current) => ({ ...current, reason: event.target.value }))} /></label>
-                </div>
-              </form>
-            )}
-
-            {scheduleTab === "contracts" && currentUserCanManageContracts && (
-              <>
-                <form className="form-panel" onSubmit={saveSupportContract}>
-                  <div className="section-header">
-                    <h2>{editingContractId ? "Alterar contrato" : "Registrar contrato"}</h2>
-                    <div className="actions-row">
-                      {editingContractId && <button className="button ghost" type="button" onClick={() => { setEditingContractId(""); setContractForm(EMPTY_CONTRACT_FORM); }}>Cancelar</button>}
-                      <button className="icon-button save-action" title="Salvar contrato" aria-label="Salvar contrato"><SaveIcon /></button>
-                    </div>
-                  </div>
-                  <div className="fields-grid">
-                    <label>Número de série<input list="contract-serial-suggestions" value={contractForm.serial} onChange={(event) => updateContractSerial(event.target.value)} placeholder="500-xxx ou 500-697/22" maxLength={12} /></label>
-                    <datalist id="contract-serial-suggestions">
-                      {machines.filter((machine) => machine.serial?.trim()).map((machine) => <option key={machine.id} value={machine.serial ?? ""}>{displayMachineCode(machine)} - {machine.client || "Cliente não informado"}</option>)}
-                    </datalist>
-                    <label>Máquina vinculada<select value={contractForm.machine_id} onChange={(event) => updateContractMachine(event.target.value)}>
-                      <option value="">Selecionar manualmente, se necessário</option>
-                      {machines.map((machine) => <option key={machine.id} value={machine.id}>{displayMachineCode(machine)} - {machine.client || "Cliente não informado"}</option>)}
-                    </select></label>
-                    <label>Código<input value={contractForm.code} onChange={(event) => setContractForm((current) => ({ ...current, code: formatMachineProjectCodeInput(event.target.value) }))} placeholder="T-665 9999" maxLength={10} /></label>
-                    <label>Cliente<input list="client-suggestions" value={contractForm.client} onChange={(event) => setContractForm((current) => ({ ...current, client: event.target.value }))} /></label>
-                    <label>Status do contrato<select value={contractForm.status} onChange={(event) => setContractForm((current) => ({ ...current, status: event.target.value as ContractStatus }))}>
-                      {CONTRACT_STATUS_OPTIONS.map((option) => <option key={option} value={option}>{option}</option>)}
-                    </select></label>
-                    <label>Tipo de contrato<select value={contractForm.contract_type} onChange={(event) => setContractForm((current) => ({ ...current, contract_type: event.target.value }))}>
-                      <option value="">Selecione</option>
-                      {CONTRACT_TYPE_OPTIONS.map((option) => <option key={option} value={option}>{option}</option>)}
-                    </select></label>
-                    <label>Final de vigência<input value={contractForm.support_contract_until} onChange={(event) => setContractForm((current) => ({ ...current, support_contract_until: formatFullDateInput(event.target.value) }))} placeholder="dd/mm/aaaa" maxLength={10} /></label>
-                  </div>
-                </form>
-
-                <section className="table-panel">
-                  <div className="section-header"><h2>Contratos cadastrados</h2><span>{supportContracts.length} registros</span></div>
-                  <div className="table-wrap">
-                    <table className="compact-table schedule-table">
-                      <thead><tr><th>Código</th><th>Cliente</th><th>Número de série</th><th>Tipo</th><th>Status</th><th>Fim da vigência</th><th>Prazo</th><th>Ações</th></tr></thead>
-                      <tbody>{supportContracts.map((contract) => {
-                        const remainingDays = daysUntil(contract.support_contract_until);
-                        const status = contractStatus(contract);
-                        return (
-                          <tr key={contract.id}>
-                            <td>{contract.code || "-"}</td>
-                            <td>{contract.client || "-"}</td>
-                            <td>{contract.serial || "-"}</td>
-                            <td>{contract.contract_type || "-"}</td>
-                            <td><span className={`soft-pill ${status === "Inativo" ? "danger-pill" : status === "Em negociação" ? "warning-pill" : ""}`}>{status}</span></td>
-                            <td>{formatDate(contract.support_contract_until)}</td>
-                            <td>{remainingDays === null ? "-" : remainingDays >= 0 ? `${remainingDays} dias` : `Vencido há ${Math.abs(remainingDays)} dias`}</td>
-                            <td>
-                              <div className="row-actions">
-                                <button className="icon-button menu-trigger" type="button" title="Ações" aria-label={`Ações do contrato ${contract.code || contract.serial || contract.id}`} onClick={(event) => toggleActionMenu(`contract-${contract.id}`, event)}><MoreIcon /></button>
-                                {openActionMenu === `contract-${contract.id}` && (
-                                  <div className="row-menu floating-row-menu" style={actionMenuPosition ?? undefined}>
-                                    <button type="button" onClick={() => { editSupportContract(contract); setOpenActionMenu(""); }}><EditIcon /> Alterar contrato</button>
-                                    <button className="danger" type="button" onClick={() => { void deleteSupportContract(contract.id); setOpenActionMenu(""); }}><TrashIcon /> Excluir</button>
-                                  </div>
-                                )}
-                              </div>
-                            </td>
-                          </tr>
-                        );
-                      })}</tbody>
-                    </table>
-                  </div>
-                </section>
-              </>
-            )}
-
-            {scheduleTab === "travel" && (
-            <section className="table-panel">
-              <div className="section-header"><h2>Cronograma de viagens</h2><span>{openTravelSchedules.length} registros</span></div>
-              <div className="table-wrap">
-                <table className="compact-table schedule-table">
-                  <thead>
-                    <tr>
-                      <th><button className="sort-header" type="button" onClick={() => toggleTravelSort("start_date")}>Início <span>{sortMark(travelSort.key === "start_date", travelSort.direction)}</span></button></th>
-                      <th><button className="sort-header" type="button" onClick={() => toggleTravelSort("end_date")}>Fim <span>{sortMark(travelSort.key === "end_date", travelSort.direction)}</span></button></th>
-                      <th><button className="sort-header" type="button" onClick={() => toggleTravelSort("code")}>Código <span>{sortMark(travelSort.key === "code", travelSort.direction)}</span></button></th>
-                      <th><button className="sort-header" type="button" onClick={() => toggleTravelSort("client")}>Cliente <span>{sortMark(travelSort.key === "client", travelSort.direction)}</span></button></th>
-                      <th><button className="sort-header" type="button" onClick={() => toggleTravelSort("technicians")}>Técnicos <span>{sortMark(travelSort.key === "technicians", travelSort.direction)}</span></button></th>
-                      <th><button className="sort-header" type="button" onClick={() => toggleTravelSort("status")}>Status <span>{sortMark(travelSort.key === "status", travelSort.direction)}</span></button></th>
-                      <th><button className="sort-header" type="button" onClick={() => toggleTravelSort("reason")}>Motivo <span>{sortMark(travelSort.key === "reason", travelSort.direction)}</span></button></th>
-                      {currentUserCanEditSchedule && <th>Ações</th>}
-                    </tr>
-                  </thead>
-                  <tbody>{openTravelSchedules.map((item) => (
-                    <tr key={item.id}>
-                      <td>{item.start_date || "-"}</td>
-                      <td>{item.end_date || "-"}</td>
-                      <td>{item.code || "-"}</td>
-                      <td>{item.client || "-"}</td>
-                      <td>{item.technicians || "-"}</td>
-                      <td><span className="soft-pill">{item.status || "-"}</span></td>
-                      <td>{item.reason || "-"}</td>
-                      {currentUserCanEditSchedule && (
-                        <td>
-                          <div className="row-actions">
-                            <button className="icon-button menu-trigger" type="button" title="Ações" aria-label={`Ações da viagem ${item.code || item.client || item.id}`} onClick={(event) => toggleActionMenu(`travel-${item.id}`, event)}><MoreIcon /></button>
-                            {openActionMenu === `travel-${item.id}` && (
-                              <div className="row-menu floating-row-menu" style={actionMenuPosition ?? undefined}>
-                                <button type="button" onClick={() => { editTravelSchedule(item); setOpenActionMenu(""); }}><EditIcon /> Alterar viagem</button>
-                                <button className="danger" type="button" onClick={() => { void deleteTravelSchedule(item.id); setOpenActionMenu(""); }}><TrashIcon /> Excluir</button>
-                              </div>
-                            )}
-                          </div>
-                        </td>
-                      )}
-                    </tr>
-                  ))}</tbody>
-                </table>
-              </div>
-            </section>
-            )}
-
-            {scheduleTab === "travel" && (
-            <section className="table-panel">
-              <div className="section-header"><h2>Viagens concluídas</h2><span>{completedTravelSchedules.length} registros</span></div>
-              <div className="table-wrap">
-                <table className="compact-table schedule-table">
-                  <thead>
-                    <tr>
-                      <th><button className="sort-header" type="button" onClick={() => toggleCompletedTravelSort("start_date")}>Início <span>{sortMark(completedTravelSort.key === "start_date", completedTravelSort.direction)}</span></button></th>
-                      <th><button className="sort-header" type="button" onClick={() => toggleCompletedTravelSort("end_date")}>Fim <span>{sortMark(completedTravelSort.key === "end_date", completedTravelSort.direction)}</span></button></th>
-                      <th><button className="sort-header" type="button" onClick={() => toggleCompletedTravelSort("code")}>Código <span>{sortMark(completedTravelSort.key === "code", completedTravelSort.direction)}</span></button></th>
-                      <th><button className="sort-header" type="button" onClick={() => toggleCompletedTravelSort("client")}>Cliente <span>{sortMark(completedTravelSort.key === "client", completedTravelSort.direction)}</span></button></th>
-                      <th><button className="sort-header" type="button" onClick={() => toggleCompletedTravelSort("technicians")}>Técnicos <span>{sortMark(completedTravelSort.key === "technicians", completedTravelSort.direction)}</span></button></th>
-                      <th><button className="sort-header" type="button" onClick={() => toggleCompletedTravelSort("status")}>Status <span>{sortMark(completedTravelSort.key === "status", completedTravelSort.direction)}</span></button></th>
-                      <th><button className="sort-header" type="button" onClick={() => toggleCompletedTravelSort("reason")}>Motivo <span>{sortMark(completedTravelSort.key === "reason", completedTravelSort.direction)}</span></button></th>
-                      {currentUserCanEditSchedule && <th>Ações</th>}
-                    </tr>
-                  </thead>
-                  <tbody>{completedTravelSchedules.map((item) => (
-                    <tr key={item.id}>
-                      <td>{item.start_date || "-"}</td>
-                      <td>{item.end_date || "-"}</td>
-                      <td>{item.code || "-"}</td>
-                      <td>{item.client || "-"}</td>
-                      <td>{item.technicians || "-"}</td>
-                      <td><span className="soft-pill">{item.status || "-"}</span></td>
-                      <td>{item.reason || "-"}</td>
-                      {currentUserCanEditSchedule && (
-                        <td>
-                          <div className="row-actions">
-                            <button className="icon-button menu-trigger" type="button" title="Ações" aria-label={`Ações da viagem concluída ${item.code || item.client || item.id}`} onClick={(event) => toggleActionMenu(`travel-done-${item.id}`, event)}><MoreIcon /></button>
-                            {openActionMenu === `travel-done-${item.id}` && (
-                              <div className="row-menu floating-row-menu" style={actionMenuPosition ?? undefined}>
-                                <button type="button" onClick={() => { editTravelSchedule(item); setOpenActionMenu(""); }}><EditIcon /> Alterar viagem</button>
-                                <button className="danger" type="button" onClick={() => { void deleteTravelSchedule(item.id); setOpenActionMenu(""); }}><TrashIcon /> Excluir</button>
-                              </div>
-                            )}
-                          </div>
-                        </td>
-                      )}
-                    </tr>
-                  ))}</tbody>
-                </table>
-              </div>
-            </section>
-            )}
-          </section>
-        )}
-
-        {view === "machineDetail" && selectedMachine && (
-          <section className="machine-dashboard view active">
-            <section className="machine-hero">
-              <div className="machine-hero-main">
-                <div className="machine-title-row">
-                  <h2>{selectedMachine.model || "Máquina"}</h2>
-                  <span className="code-pill">{displayMachineCode(selectedMachine)}</span>
-                </div>
-                <div className="machine-metrics">
-                  <div><DetailIcon type="client" /><p><span>Cliente</span><strong>{selectedMachine.client || "-"}</strong></p></div>
-                  <div><DetailIcon type="serial" /><p><span>Número de série</span><strong>{selectedMachine.serial || "-"}</strong></p></div>
-                  <div><DetailIcon type="calendar" /><p><span>Fabricação</span><strong>{formatMonthYear(selectedMachine.manufacture_month)}</strong></p></div>
-                  <div><DetailIcon type="location" /><p><span>Localização</span><strong>{selectedMachine.unit_city || "-"}</strong></p></div>
-                  <div><DetailIcon type="mechanical" /><p><span>Lista Mecânica</span><strong>{selectedMachine.mechanical_list || "-"}</strong></p></div>
-                  <div className="metric-wide"><DetailIcon type="detail" /><p><span>Descrição</span><strong>{selectedMachine.description || "-"}</strong></p></div>
-                </div>
-              </div>
-              <aside className={`contract-card ${selectedMachineContractStatus === "Ativo" ? "active" : selectedMachineContractStatus === "Em negociação" ? "negotiating" : "inactive"}`}>
-                <DetailIcon type={selectedMachineContractStatus === "Ativo" ? "check" : selectedMachineContractStatus === "Em negociação" ? "history" : "alert"} />
-                <strong>{selectedMachineContractStatus === "Ativo" ? "Contrato Ativo" : selectedMachineContractStatus === "Em negociação" ? "Em negociação" : "Sem contrato ativo"}</strong>
-                {selectedMachineHasContractInfo && selectedMachineContract && (
-                  <>
-                    <span>Tipo de contrato</span>
-                    <b>{selectedMachineContract.contract_type || "-"}</b>
-                    <span>Fim da vigência</span>
-                    <em>{formatDate(selectedMachineContract.support_contract_until)}</em>
-                    {selectedMachineContractDays !== null && <small>{selectedMachineContractDays >= 0 ? `Faltam ${selectedMachineContractDays} dias` : `Vencido há ${Math.abs(selectedMachineContractDays)} dias`}</small>}
-                  </>
-                )}
-              </aside>
-            </section>
-
-            {currentUserCanViewMachineDetailCards && (
-              <section className="dashboard-grid">
-                <article className="dashboard-card">
-                  <div className="card-title"><DetailIcon type="software" /><h3>Software</h3></div>
-                  <dl className="spec-list">
-                    <div><dt>Software</dt><dd><span className="soft-pill">{selectedMachine.software_version || "-"}</span></dd></div>
-                    <div><dt>Código do software</dt><dd>{selectedMachine.software_code || "-"}</dd></div>
-                    <div><dt>VM</dt><dd>{selectedMachine.vm || "-"}</dd></div>
-                    <div><dt>Faixa de IP</dt><dd>{selectedMachine.ip_range || "-"}</dd></div>
-                    <div><dt>Último atendimento</dt><dd>{formatDate(lastServiceDate(selectedMachine))}</dd></div>
-                  </dl>
-                </article>
-
-                <article className="dashboard-card remote-access-card">
-                  <div className="card-title"><DetailIcon type="remote" /><h3>Acesso Remoto</h3><span className="soft-pill">{selectedMachineAccess}</span></div>
-                  <dl className="spec-list">
-                    {selectedMachineAccess === "VNC" && (
-                      <>
-                        <div><dt>IP de acesso</dt><dd>{selectedMachine.vnc_ip || "-"}</dd></div>
-                        <div><dt>Usuário VM</dt><dd>{selectedMachine.vnc_user || "-"}</dd></div>
-                        <div><dt>Senha</dt><dd>{currentUserCanAccessCredentials ? selectedMachine.vnc_password || "-" : "Protegida"}</dd></div>
-                        <div><dt>Senha VM</dt><dd>{currentUserCanAccessCredentials ? selectedMachine.vnc_vm_password || "-" : "Protegida"}</dd></div>
-                        <div><dt>Observações</dt><dd>{selectedMachine.vnc_notes || "-"}</dd></div>
-                      </>
-                    )}
-                    {selectedMachineAccess === "SINEMA" && (
-                      <>
-                        <div><dt>Device Name</dt><dd>{selectedMachine.sinema_url || "-"}</dd></div>
-                        <div><dt>Subnet Name</dt><dd>{selectedMachine.sinema_user || "-"}</dd></div>
-                        <div><dt>Observações</dt><dd>{selectedMachine.sinema_notes || "-"}</dd></div>
-                      </>
-                    )}
-                    {selectedMachineAccess === "Sem acesso remoto" && <div><dt>Status</dt><dd>Sem acesso remoto cadastrado</dd></div>}
-                  </dl>
-                </article>
-
-                <article className="dashboard-card history-card">
-                  <div className="card-title"><DetailIcon type="history" /><h3>Histórico de Atendimentos</h3><button className="button ghost" type="button" onClick={showFullHistory}>Ver todos</button></div>
-                  <div className="history-list">
-                    {selectedMachineRecentHistory.length ? selectedMachineRecentHistory.map((record) => (
-                      <button key={record.id} type="button" onClick={() => void openServiceRecord(record)}>
-                        <span>{formatDate(record.service_date)}</span>
-                        <strong>{record.issue_summary || record.equipment || "Atendimento"}</strong>
-                        <em>{normalizeServiceType(record.service_type)}</em>
-                      </button>
-                    )) : <p>Nenhum atendimento registrado.</p>}
-                  </div>
-                </article>
-              </section>
-            )}
-
-            <section className="dashboard-card quick-actions-card">
-              <div className="card-title"><DetailIcon type="mechanical" /><h3>Ações rápidas</h3></div>
-              <div className="quick-action-grid">
-                {currentUserCanEmitReports && <button type="button" onClick={() => startNewService(selectedMachine)}><PlusIcon /><span>Novo atendimento</span></button>}
-                {currentUserCanEditMachine && <button type="button" onClick={() => { setEditingMachineId(selectedMachine.id); setRegistryTab("machines"); setView("registry"); }}><EditIcon /><span>Alterar cadastro</span></button>}
-                <button type="button" onClick={() => selectedMachineRecentHistory[0] && downloadServicePdf(selectedMachine, pdfReadyServiceRecord(selectedMachineRecentHistory[0]))} disabled={!selectedMachineRecentHistory.length}><PdfDownloadIcon /><span>Baixar último PDF</span></button>
-              </div>
-            </section>
-
-            {selectedMachineDraftReports.length > 0 && (
-              <section className="dashboard-card draft-history-card">
-                <div className="section-header">
-                  <div>
-                    <h2>Prévias não finalizadas</h2>
-                    <p>Relatórios salvos para revisão, assinatura ou envio posterior.</p>
-                  </div>
-                  <span>{selectedMachineDraftReports.length} pendente{selectedMachineDraftReports.length === 1 ? "" : "s"}</span>
-                </div>
-                <div className="table-wrap">
-                  <table className="history-table">
-                    <thead><tr>
-                      <th>Data</th>
-                      <th>Equipamento</th>
-                      <th>Técnico</th>
-                      <th>Motivo breve</th>
-                      <th>Ações</th>
-                    </tr></thead>
-                    <tbody>
-                      {selectedMachineDraftReports.map((record) => (
-                        <tr key={record.id}>
-                          <td>{formatDate(record.service_date)}</td>
-                          <td>{record.equipment || "-"}</td>
-                          <td>{record.technician_name}</td>
-                          <td>{record.issue_summary || "-"}</td>
-                          <td>
-                            <div className="row-actions">
-                              <button className="icon-button menu-trigger" type="button" title="Ações" aria-label="Ações da prévia" onClick={(event) => toggleActionMenu(`draft-service-${record.id}`, event)}><MoreIcon /></button>
-                              {openActionMenu === `draft-service-${record.id}` && (
-                                <div className="row-menu floating-row-menu" style={actionMenuPosition ?? undefined}>
-                                  <button type="button" onClick={() => { void openServiceDraftPreview(record); setOpenActionMenu(""); }}><PdfDownloadIcon /> Abrir prévia</button>
-                                  {currentUserCanEmitReports && record.created_by === currentUserId && <button type="button" onClick={() => { startServiceEdit(record); setOpenActionMenu(""); }}><EditIcon /> Editar</button>}
-                                  {currentUserCanEmitReports && record.created_by === currentUserId && <button type="button" onClick={() => { void openServiceDraftPreview(record); setOpenActionMenu(""); }}><DetailIcon type="mail" /> Finalizar</button>}
-                                  {(currentUserHasFullAccess || (currentUserCanEmitReports && record.created_by === currentUserId)) && <button className="danger" type="button" onClick={() => { void deleteServiceRecord(record); setOpenActionMenu(""); }}><TrashIcon /> Excluir</button>}
-                                </div>
-                              )}
-                            </div>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </section>
-            )}
-
-            <section className="dashboard-card full-history-card" id="full-machine-history">
-              <div className="section-header"><h2>Histórico completo de {displayMachineCode(selectedMachine)}</h2><span>{filteredHistory.length} registros</span></div>
-              <label>Filtrar histórico<input value={historyFilter} onChange={(event) => setHistoryFilter(event.target.value)} /></label>
-              <div className="table-wrap">
-                <table className="history-table">
-                  <thead><tr>
-                    <th><button className="sort-header" type="button" onClick={() => toggleHistorySort("service_date")}>Data <span>{sortMark(historySort.key === "service_date", historySort.direction)}</span></button></th>
-                    <th><button className="sort-header" type="button" onClick={() => toggleHistorySort("equipment")}>Equipamento <span>{sortMark(historySort.key === "equipment", historySort.direction)}</span></button></th>
-                    <th><button className="sort-header" type="button" onClick={() => toggleHistorySort("technician_name")}>Técnico <span>{sortMark(historySort.key === "technician_name", historySort.direction)}</span></button></th>
-                    <th><button className="sort-header" type="button" onClick={() => toggleHistorySort("issue_summary")}>Motivo breve <span>{sortMark(historySort.key === "issue_summary", historySort.direction)}</span></button></th>
-                    <th>Ações</th>
-                  </tr></thead>
-                  <tbody>
-                    {filteredHistory.map((record) => (
-                      <tr key={record.id} className="clickable-row" onClick={() => void openServiceRecord(record)}>
-                        <td>{formatDate(record.service_date)}</td>
-                        <td>{record.equipment || "-"}</td>
-                        <td>{record.technician_name}</td>
-                        <td>{record.issue_summary || "-"}</td>
-                        <td>
-                          <div className="row-actions" onClick={(event) => event.stopPropagation()}>
-                            <button className="icon-button menu-trigger" type="button" title="Ações" aria-label="Ações do atendimento" onClick={(event) => toggleActionMenu(`service-${record.id}`, event)}><MoreIcon /></button>
-                            {openActionMenu === `service-${record.id}` && (
-                              <div className="row-menu floating-row-menu" style={actionMenuPosition ?? undefined}>
-                                <button type="button" onClick={() => { downloadServicePdf(selectedMachine, pdfReadyServiceRecord(record)); setOpenActionMenu(""); }}><PdfDownloadIcon /> Baixar PDF</button>
-                                {currentUserCanEmitReports && record.created_by === currentUserId && <button type="button" onClick={() => { startServiceEdit(record); setOpenActionMenu(""); }}><EditIcon /> Editar</button>}
-                                {(currentUserHasFullAccess || (currentUserCanEmitReports && record.created_by === currentUserId)) && <button className="danger" type="button" onClick={() => { void deleteServiceRecord(record); setOpenActionMenu(""); }}><TrashIcon /> Excluir</button>}
-                              </div>
-                            )}
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </section>
-          </section>
-        )}
-
-        {view === "service" && (
-          <form id="service-record-form" className="form-panel" onSubmit={saveService}>
-            <div className="section-header">
-              <h2>{editingServiceRecord ? "Editar atendimento" : "Registrar atendimento"}</h2>
-            </div>
-            <div className="fields-grid">
-              <label className={serviceMachineLookupInvalid ? "field-invalid" : ""}>
-                Máquina
-                <input
-                  name="machine_lookup"
-                  list="service-machine-suggestions"
-                  required
-                  placeholder="Código, cliente ou modelo"
-                  value={serviceMachineLookupInput}
-                  onChange={(event) => {
-                    setServiceMachineLookupInput(event.target.value);
-                    setServiceMachineTouched(Boolean(event.target.value.trim()));
-                  }}
-                  onBlur={() => setServiceMachineTouched(true)}
-                  aria-invalid={serviceMachineLookupInvalid}
-                  aria-describedby={serviceMachineLookupInvalid ? "service-machine-error" : undefined}
-                />
-                {serviceMachineLookupInvalid && <span id="service-machine-error" className="field-error">Máquina não cadastrada. Selecione uma opção válida das sugestões.</span>}
-              </label>
-              <datalist id="service-machine-suggestions">{machines.map((machine) => <option key={machine.id} value={serviceMachineLookupLabel(machine)} />)}</datalist>
-              <label>Equipamento<input name="equipment" placeholder="CLP, IHM, servo, inversor" defaultValue={editingServiceRecord?.equipment ?? ""} /></label>
-              <label>Técnico responsável<input value={currentUserName || displayUserName(currentUserEmail)} readOnly /></label>
-              <label>
-                Demais técnicos
-                <input
-                  name="support_technicians"
-                  list="service-technician-suggestions"
-                  placeholder="Nome; outro nome"
-                  value={supportTechniciansInput}
-                  onChange={(event) => setSupportTechniciansInput(event.target.value)}
-                />
-              </label>
-              <datalist id="service-technician-suggestions">{authorizedUsers.map((user) => <option key={user.id} value={serviceTechnicianLookupLabel(user)} />)}</datalist>
-              <label>Início do atendimento<input name="service_start" placeholder="dd/mm/aa ou dd/mm/aa - hh:mm" maxLength={16} defaultValue={editingServiceRecord?.service_start ?? ""} onChange={(event) => { event.currentTarget.value = formatServiceDateTimeInput(event.currentTarget.value); }} /></label>
-              <label>Fim do atendimento<input name="service_end" placeholder="dd/mm/aa ou dd/mm/aa - hh:mm" maxLength={16} defaultValue={editingServiceRecord?.service_end ?? ""} onChange={(event) => { event.currentTarget.value = formatServiceDateTimeInput(event.currentTarget.value); }} /></label>
-              <label>Tipo de atendimento<select name="service_type" value={serviceType} onChange={(event) => updateServiceType(event.target.value as ServiceType)}>
-                {SERVICE_TYPE_OPTIONS.map((option) => <option key={option} value={option}>{option}</option>)}
-              </select></label>
-              {(!editingServiceRecord || isServiceDraft(editingServiceRecord)) && (
-                <label className="wide email-suggestion-field">
-                  E-mails dos clientes para envio
-                  <textarea
-                    name="service_recipients"
-                    rows={2}
-                    placeholder="um@email.com; outro@email.com"
-                    value={serviceRecipientsInput}
-                    onChange={(event) => {
-                      setServiceRecipientsInput(event.target.value);
-                      setServiceRecipientSuggestionsOpen(true);
-                    }}
-                    onFocus={() => setServiceRecipientSuggestionsOpen(true)}
-                    onBlur={() => window.setTimeout(() => setServiceRecipientSuggestionsOpen(false), 120)}
-                  />
-                  {serviceRecipientSuggestionsOpen && serviceEmailSuggestions.length > 0 && (
-                    <div className="email-suggestions" role="listbox" aria-label="Sugestões de e-mail">
-                      {serviceEmailSuggestions.map((email) => (
-                        <button key={email} type="button" onMouseDown={(event) => event.preventDefault()} onClick={() => selectServiceEmailSuggestion(email)}>
-                          {email}
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </label>
-              )}
-              {serviceType === "Visita técnica" && (
-                <label>Cliente / representante<input name="customer_name" placeholder="Nome de quem assinou" defaultValue={editingServiceRecord?.customer_name ?? ""} /></label>
-              )}
-              <label className="wide">Motivo breve<input name="issue_summary" placeholder="Ex.: Falha no acionamento X" defaultValue={editingServiceRecord?.issue_summary ?? ""} /></label>
-              <label className="wide">Solicitação do cliente / problema relatado<textarea name="request" rows={3} required defaultValue={editingServiceRecord?.request ?? ""} /></label>
-              <label className="wide">Diagnóstico<textarea name="diagnosis" rows={3} required defaultValue={editingServiceRecord?.diagnosis ?? ""} /></label>
-              <label className="wide">Serviço realizado<textarea name="service_done" rows={3} required defaultValue={editingServiceRecord?.service_done ?? ""} /></label>
-              <label className="wide">Observações<textarea name="observations" rows={3} defaultValue={editingServiceRecord?.observations ?? ""} /></label>
-              <section className="attachment-panel wide">
-                <div className="section-header">
-                  <div>
-                    <h3>Imagens do relatório</h3>
-                    <p>Anexe fotos de evidência, componentes, alarmes ou medições. Elas serão incluídas no PDF.</p>
-                  </div>
-                  <label className="button ghost attachment-upload-button">
-                    Anexar imagens
-                    <input type="file" accept="image/*" multiple onChange={addServiceAttachmentFiles} />
-                  </label>
-                </div>
-                {serviceAttachments.length > 0 ? (
-                  <div className="attachment-grid">
-                    {serviceAttachments.map((attachment, index) => (
-                      <article className="attachment-card" key={attachment.id}>
-                        <img src={attachment.dataUrl} alt={`Imagem ${index + 1} do relatório`} />
-                        <input
-                          value={attachment.caption ?? ""}
-                          onChange={(event) => updateServiceAttachmentCaption(attachment.id, event.target.value)}
-                          placeholder={`Legenda da imagem ${index + 1}`}
-                          maxLength={120}
-                        />
-                        <button className="button ghost" type="button" onClick={() => removeServiceAttachment(attachment.id)}>Remover</button>
-                      </article>
-                    ))}
-                  </div>
-                ) : (
-                  <p className="empty-state">Nenhuma imagem anexada.</p>
-                )}
-              </section>
-              {serviceType === "Visita técnica" && (
-                <section className={`signature-panel wide ${signatureExpanded ? "signature-expanded" : ""}`}>
-                  <div className="section-header">
-                    <div>
-                      <h3>Assinatura do cliente</h3>
-                      <p>{signatureExpanded ? "Use a tela horizontal para assinar com mais espaço." : "Assine com mouse, touchpad ou tela touch."}</p>
-                    </div>
-                    <div className="signature-actions">
-                      {!signatureExpanded && <button className="button ghost signature-expand-button" type="button" onClick={() => void openSignaturePad()}>Ampliar assinatura</button>}
-                      {signatureExpanded && <button className="button primary" type="button" onClick={() => void closeSignaturePad()}>Concluir</button>}
-                      <button className="button ghost" type="button" onClick={clearSignature}>Limpar assinatura</button>
-                    </div>
-                  </div>
-                  <div className="signature-canvas-wrap">
-                    <canvas
-                      ref={signatureCanvasRef}
-                      className="signature-canvas"
-                      width={900}
-                      height={220}
-                      aria-label="Campo para assinatura do cliente"
-                      onPointerDown={startSignature}
-                      onPointerMove={drawSignature}
-                      onPointerUp={finishSignature}
-                      onPointerCancel={finishSignature}
-                    />
-                    <div className="signature-guide" aria-hidden="true">
-                      <span>Assine sobre a linha</span>
-                    </div>
-                  </div>
-                </section>
-              )}
-            </div>
-            <div className="service-form-actions">
-              {editingServiceRecord && <button className="button ghost" type="button" onClick={() => startNewService()}>Cancelar edição</button>}
-              {(!editingServiceRecord || isServiceDraft(editingServiceRecord)) ? (
-                <>
-                  <button className="button ghost" type="submit" name="report_action" value="draft">Salvar prévia</button>
-                  <button className="button primary" type="submit" name="report_action" value="finalize">Finalizar atendimento</button>
-                </>
-              ) : (
-                <button className="icon-button save-action" type="submit" name="report_action" value="update" title="Salvar alterações" aria-label="Salvar alterações"><SaveIcon /></button>
-              )}
-            </div>
-          </form>
-        )}
-
-        {view === "registry" && (
-          <section className="view active">
-            <section className="table-panel">
-              <div className="section-header">
-                <h2>Cadastro</h2>
-                <div className="segmented-control" aria-label="Tipo de cadastro">
-                  {currentUserCanEditMachine && <button className={registryTab === "machines" ? "active" : ""} type="button" onClick={() => setRegistryTab("machines")}><DetailIcon type="software" /> Máquinas</button>}
-                  {currentUserCanUseRemoteAccess && <button className={registryTab === "clients" ? "active" : ""} type="button" onClick={() => setRegistryTab("clients")}><DetailIcon type="client" /> Clientes</button>}
-                  {currentUserCanManageUsers && <button className={registryTab === "users" ? "active" : ""} type="button" onClick={() => setRegistryTab("users")}><DetailIcon type="client" /> Usuários</button>}
-                </div>
-              </div>
-            </section>
-
-            {registryTab === "machines" && (
-              <>
-                {currentUserCanEditMachine && (
-                <form className="machine-form" onSubmit={saveMachine}>
-                  <div className="section-header">
-                    <h2>{editingMachineId ? "Alterar máquina" : "Cadastrar máquina"}</h2>
-                    <div className="actions-row">
-                      {editingMachineId && <button className="button ghost" type="button" onClick={() => setEditingMachineId("")}>Cancelar</button>}
-                      <button className="icon-button save-action" title="Salvar máquina" aria-label="Salvar máquina"><SaveIcon /></button>
-                    </div>
-                  </div>
-                  <section className="form-card">
-                    <h3>Dados da máquina</h3>
-                    <div className="fields-grid">
-                      <label>Código<input required disabled={machineMainFieldsDisabled} value={machineForm.code} onChange={(event) => updateMachineForm("code", formatMachineProjectCodeInput(event.target.value))} placeholder="T-665 9999" maxLength={10} /></label>
-                      <label>Modelo<input disabled={machineMainFieldsDisabled} value={machineForm.model} onChange={(event) => updateMachineForm("model", event.target.value)} placeholder="Onduladeira, Dryend, ICV..." maxLength={120} /></label>
-                      <label className="wide">Descrição<input disabled={machineMainFieldsDisabled} value={machineForm.description} onChange={(event) => updateMachineForm("description", event.target.value)} placeholder="Descrição curta do modelo da máquina" maxLength={160} /></label>
-                      <label>Cliente<input disabled={machineMainFieldsDisabled} list="client-suggestions" value={machineForm.client} onChange={(event) => updateMachineForm("client", event.target.value)} placeholder="Nome da empresa" maxLength={160} /></label>
-                      <datalist id="client-suggestions">{clientSuggestions.map((client) => <option key={client} value={client} />)}</datalist>
-                      <label>Localização<input disabled={machineMainFieldsDisabled} list="city-suggestions" value={machineForm.unit_city} onChange={(event) => updateMachineForm("unit_city", event.target.value)} placeholder="Cidade - UF ou Cidade - PAIS" maxLength={160} /></label>
-                      <datalist id="city-suggestions">{citySuggestions.map((city) => <option key={city} value={city} />)}</datalist>
-                      <label>Mecânica<input disabled={machineMainFieldsDisabled} value={machineForm.mechanical_list} onChange={(event) => updateMachineForm("mechanical_list", event.target.value)} placeholder="500-xxx ou T-0xxx" maxLength={10} /></label>
-                      <label>Código do software<input disabled={machineMainFieldsDisabled} value={machineForm.software_code} onChange={(event) => updateMachineForm("software_code", formatMachineProjectCodeInput(event.target.value))} placeholder="T-665 9999" maxLength={10} /></label>
-                      <label>VM<select disabled={machineMainFieldsDisabled} value={machineForm.vm} onChange={(event) => updateMachineForm("vm", event.target.value)}>
-                        <option value="">Selecione</option>
-                        {machineForm.vm && !VM_OPTIONS.includes(machineForm.vm) && <option value={machineForm.vm}>{machineForm.vm}</option>}
-                        {VM_OPTIONS.map((option) => <option key={option} value={option}>{option}</option>)}
-                      </select></label>
-                      <label>Faixa de IP<input disabled={machineMainFieldsDisabled} value={machineForm.ip_range} onChange={(event) => updateMachineForm("ip_range", event.target.value)} placeholder="Ex.: 189.1.87.xxx" maxLength={15} /></label>
-                      <label>Número de série<input disabled={machineMainFieldsDisabled} value={machineForm.serial} onChange={(event) => updateMachineForm("serial", event.target.value)} placeholder="500-xxx ou 500-697/22" maxLength={12} /></label>
-                      <label>Fabricação<input disabled={machineMainFieldsDisabled} value={machineForm.manufacture_month} onChange={(event) => updateMachineForm("manufacture_month", formatMonthYearInput(event.target.value))} placeholder="mm/aaaa" pattern="\d{2}/\d{4}" maxLength={7} /></label>
-                      <label>Software<select disabled={machineMainFieldsDisabled} value={machineForm.software_version} onChange={(event) => updateMachineForm("software_version", event.target.value)}>
-                        <option value="">Selecione</option>
-                        {machineForm.software_version && !SOFTWARE_OPTIONS.includes(machineForm.software_version) && <option value={machineForm.software_version}>{machineForm.software_version}</option>}
-                        {SOFTWARE_OPTIONS.map((option) => <option key={option} value={option}>{option}</option>)}
-                      </select></label>
-                    </div>
-                  </section>
-
-                  <section className="form-card">
-                    <h3>Informações de Acesso</h3>
-                    <div className="fields-grid">
-                      <label>Acesso remoto<select disabled={machineMainFieldsDisabled} value={machineForm.remote_access} onChange={(event) => updateMachineForm("remote_access", event.target.value as RemoteAccess)}>
-                        {REMOTE_ACCESS_OPTIONS.map((option) => <option key={option} value={option}>{option}</option>)}
-                      </select></label>
-                    </div>
-
-                  {showRemoteAccess && !currentUserCanAccessCredentials && (
-                    <p className="empty-state">Seu usuário não tem permissão para visualizar ou alterar credenciais de acesso remoto.</p>
-                  )}
-
-                  {showRemoteAccess && currentUserCanAccessCredentials && (
-                    <>
-                      {machineForm.remote_access === "VNC" && (
-                        <div className="fields-grid">
-                          <label>IP de acesso<input disabled={machineMainFieldsDisabled} value={machineForm.vnc_ip} onChange={(event) => updateMachineForm("vnc_ip", event.target.value)} placeholder="Ex.: 189.1.87.200/5906" maxLength={21} /></label>
-                          <label>Senha<input disabled={machineMainFieldsDisabled} type="text" value={machineForm.vnc_password} onChange={(event) => updateMachineForm("vnc_password", event.target.value)} /></label>
-                          <label>Usuário VM<input disabled={machineMainFieldsDisabled} value={machineForm.vnc_user} onChange={(event) => updateMachineForm("vnc_user", event.target.value)} /></label>
-                          <label>Senha VM<input disabled={machineMainFieldsDisabled} type="text" value={machineForm.vnc_vm_password} onChange={(event) => updateMachineForm("vnc_vm_password", event.target.value)} /></label>
-                          <label className="wide">Observações de acesso<textarea disabled={machineMainFieldsDisabled} rows={3} value={machineForm.vnc_notes} onChange={(event) => updateMachineForm("vnc_notes", event.target.value)} /></label>
-                        </div>
-                      )}
-                      {machineForm.remote_access === "SINEMA" && (
-                        <div className="fields-grid">
-                          <label>Device Name<input disabled={machineMainFieldsDisabled} value={machineForm.sinema_url} onChange={(event) => updateMachineForm("sinema_url", event.target.value)} /></label>
-                          <label>Subnet Name<input disabled={machineMainFieldsDisabled} value={machineForm.sinema_user} onChange={(event) => updateMachineForm("sinema_user", event.target.value)} /></label>
-                          <label className="wide">Observações<textarea disabled={machineMainFieldsDisabled} rows={3} value={machineForm.sinema_notes} onChange={(event) => updateMachineForm("sinema_notes", event.target.value)} /></label>
-                        </div>
-                      )}
-                    </>
-                  )}
-                  </section>
-                </form>
-                )}
-
-                <section className="table-panel">
-                  <div className="section-header"><h2>Máquinas cadastradas</h2><span>{registryMachines.length} registros</span></div>
-                  <div className="table-wrap">
-                    <table>
-                      <thead><tr>
-                        <th aria-sort={registryMachineSort.key === "code" ? (registryMachineSort.direction === "asc" ? "ascending" : "descending") : "none"}><button className="sort-header" type="button" onClick={() => toggleRegistryMachineSort("code")}>Código <span aria-hidden="true">{sortMark(registryMachineSort.key === "code", registryMachineSort.direction)}</span></button></th>
-                        <th aria-sort={registryMachineSort.key === "model" ? (registryMachineSort.direction === "asc" ? "ascending" : "descending") : "none"}><button className="sort-header" type="button" onClick={() => toggleRegistryMachineSort("model")}>Modelo <span aria-hidden="true">{sortMark(registryMachineSort.key === "model", registryMachineSort.direction)}</span></button></th>
-                        <th aria-sort={registryMachineSort.key === "client" ? (registryMachineSort.direction === "asc" ? "ascending" : "descending") : "none"}><button className="sort-header" type="button" onClick={() => toggleRegistryMachineSort("client")}>Cliente <span aria-hidden="true">{sortMark(registryMachineSort.key === "client", registryMachineSort.direction)}</span></button></th>
-                        <th aria-sort={registryMachineSort.key === "unit_city" ? (registryMachineSort.direction === "asc" ? "ascending" : "descending") : "none"}><button className="sort-header" type="button" onClick={() => toggleRegistryMachineSort("unit_city")}>Localização <span aria-hidden="true">{sortMark(registryMachineSort.key === "unit_city", registryMachineSort.direction)}</span></button></th>
-                        <th aria-sort={registryMachineSort.key === "vm" ? (registryMachineSort.direction === "asc" ? "ascending" : "descending") : "none"}><button className="sort-header" type="button" onClick={() => toggleRegistryMachineSort("vm")}>VM <span aria-hidden="true">{sortMark(registryMachineSort.key === "vm", registryMachineSort.direction)}</span></button></th>
-                        <th aria-sort={registryMachineSort.key === "manufacture_month" ? (registryMachineSort.direction === "asc" ? "ascending" : "descending") : "none"}><button className="sort-header" type="button" onClick={() => toggleRegistryMachineSort("manufacture_month")}>Fabricação <span aria-hidden="true">{sortMark(registryMachineSort.key === "manufacture_month", registryMachineSort.direction)}</span></button></th>
-                        <th aria-sort={registryMachineSort.key === "remote_access" ? (registryMachineSort.direction === "asc" ? "ascending" : "descending") : "none"}><button className="sort-header" type="button" onClick={() => toggleRegistryMachineSort("remote_access")}>Acesso <span aria-hidden="true">{sortMark(registryMachineSort.key === "remote_access", registryMachineSort.direction)}</span></button></th>
-                        <th>Ações</th>
-                      </tr></thead>
-                      <tbody>{registryMachines.map((machine) => (
-                        <tr key={machine.id}>
-                          <td>{displayMachineCode(machine)}</td>
-                          <td>{machine.model || "-"}</td>
-                          <td>{machine.client || "-"}</td>
-                          <td>{machine.unit_city || "-"}</td>
-                          <td>{machine.vm || "-"}</td>
-                          <td>{formatMonthYear(machine.manufacture_month)}</td>
-                          <td>{machine.remote_access || machine.access_method || "Sem acesso remoto"}</td>
-                          <td>
-                            {currentUserCanEditMachine ? <div className="row-actions">
-                              <button className="icon-button menu-trigger" type="button" title="Ações" aria-label={`Ações da máquina ${displayMachineCode(machine)}`} onClick={(event) => toggleActionMenu(`machine-${machine.id}`, event)}><MoreIcon /></button>
-                              {openActionMenu === `machine-${machine.id}` && (
-                                <div className="row-menu floating-row-menu" style={actionMenuPosition ?? undefined}>
-                                  <button type="button" onClick={() => { setEditingMachineId(machine.id); setRegistryTab("machines"); setOpenActionMenu(""); }}><EditIcon /> Alterar cadastro</button>
-                                  <button className="danger" type="button" onClick={() => { void deleteMachine(machine.id); setOpenActionMenu(""); }}><TrashIcon /> Excluir</button>
-                                </div>
-                              )}
-                            </div> : "-"}
-                          </td>
-                        </tr>
-                      ))}</tbody>
-                    </table>
-                  </div>
-                </section>
-              </>
-            )}
-
-            {registryTab === "clients" && currentUserCanUseRemoteAccess && (
-              <section className="table-panel">
-                <div className="section-header"><h2>Clientes do Acesso Remoto</h2><span>{sortedChatContacts.length} registros</span></div>
-                <div className="table-wrap">
-                  <table className="compact-table">
-                    <thead><tr><th>Cliente</th><th>Empresa</th><th>Telefone</th><th>Última atualização</th><th>Ações</th></tr></thead>
-                    <tbody>{sortedChatContacts.map((contact) => (
-                      <tr key={contact.id}>
-                        <td>{contact.name || "-"}</td>
-                        <td>{contact.company || "-"}</td>
-                        <td>{contact.phone}</td>
-                        <td>{formatDateTime(contact.updated_at)}</td>
-                        <td>
-                          <div className="row-actions">
-                            <button className="icon-button menu-trigger" type="button" title="Ações" aria-label={`Ações do cliente ${contact.name || contact.phone}`} onClick={(event) => toggleActionMenu(`contact-${contact.id}`, event)}><MoreIcon /></button>
-                            {openActionMenu === `contact-${contact.id}` && (
-                              <div className="row-menu floating-row-menu" style={actionMenuPosition ?? undefined}>
-                                <button type="button" onClick={() => editChatContact(contact)}><EditIcon /> Alterar</button>
-                                <button className="danger" type="button" onClick={() => { void deleteChatContact(contact.id); setOpenActionMenu(""); }}><TrashIcon /> Excluir</button>
-                              </div>
-                            )}
-                          </div>
-                        </td>
-                      </tr>
-                    ))}</tbody>
-                  </table>
-                  {!sortedChatContacts.length && <p className="empty-state">Nenhum cliente identificado pelo Acesso Remoto ainda.</p>}
-                </div>
-              </section>
-            )}
-
-            {registryTab === "users" && currentUserCanManageUsers && (
-              <>
-                <form className="form-panel" onSubmit={saveUser}>
-                  <div className="section-header">
-                    <h2>{editingUserId ? "Alterar usuário" : "Cadastrar usuário"}</h2>
-                    <div className="actions-row">
-                      {editingUserId && <button className="button ghost" type="button" onClick={() => { setEditingUserId(""); setUserForm(EMPTY_USER_FORM); }}>Cancelar</button>}
-                      <button className="icon-button save-action" title="Salvar usuário" aria-label="Salvar usuário"><SaveIcon /></button>
-                    </div>
-                  </div>
-                  <div className="fields-grid">
-                    <label>Usuário<input value={userForm.name} onChange={(event) => setUserForm((current) => ({ ...current, name: event.target.value }))} /></label>
-                    <label>E-mail<input value={userForm.email} onChange={(event) => setUserForm((current) => ({ ...current, email: event.target.value }))} type="email" /></label>
-                    <label>Telefone<input value={formatPhone(userForm.phone)} onChange={(event) => setUserForm((current) => ({ ...current, phone: formatPhone(event.target.value) }))} placeholder="(45) 99952-6775" inputMode="tel" maxLength={15} /></label>
-                    <label>Perfil / Setor<select value={userForm.role} onChange={(event) => setUserForm((current) => ({ ...current, role: event.target.value as UserRole }))}>
-                      {userForm.role === "Montagem" && <option value="Montagem">Montagem (legado)</option>}
-                      {USER_ROLE_OPTIONS.map((option) => <option key={option} value={option}>{option}</option>)}
-                    </select></label>
-                    <label className="checkbox-field"><input type="checkbox" checked={userForm.remote_access_allowed} onChange={(event) => setUserForm((current) => ({ ...current, remote_access_allowed: event.target.checked }))} /> Permitir Acesso Remoto</label>
-                    <label className="checkbox-field"><input type="checkbox" checked={userForm.credential_access_allowed} onChange={(event) => setUserForm((current) => ({ ...current, credential_access_allowed: event.target.checked }))} /> Permitir acesso às senhas</label>
-                  </div>
-                </form>
-                <section className="table-panel">
-                  <div className="table-wrap">
-                    <table className="compact-table">
-                      <thead><tr>
-                        <th><button className="sort-header" type="button" onClick={() => toggleUserSort("name")}>Usuário <span>{sortMark(userSort.key === "name", userSort.direction)}</span></button></th>
-                        <th><button className="sort-header" type="button" onClick={() => toggleUserSort("email")}>E-mail <span>{sortMark(userSort.key === "email", userSort.direction)}</span></button></th>
-                        <th>Telefone</th>
-                        <th><button className="sort-header" type="button" onClick={() => toggleUserSort("role")}>Perfil / Setor <span>{sortMark(userSort.key === "role", userSort.direction)}</span></button></th>
-                        <th>Acesso remoto</th>
-                        <th>Senhas</th>
-                        <th>Ações</th>
-                      </tr></thead>
-                      <tbody>{sortedUsers.map((user) => (
-                        <tr key={user.id}>
-                          <td>{user.name}</td>
-                          <td>{user.email}</td>
-                          <td>{formatPhone(user.phone) || "-"}</td>
-                          <td>{user.role}</td>
-                          <td>{user.remote_access_allowed ? "Sim" : "Não"}</td>
-                          <td>{user.credential_access_allowed ? "Sim" : "Não"}</td>
-                          <td>
-                            <div className="row-actions">
-                              <button className="icon-button menu-trigger" type="button" title="Ações" aria-label={`Ações do usuário ${user.name}`} onClick={(event) => toggleActionMenu(`user-${user.id}`, event)}><MoreIcon /></button>
-                              {openActionMenu === `user-${user.id}` && (
-                                <div className="row-menu floating-row-menu" style={actionMenuPosition ?? undefined}>
-                                  <button type="button" onClick={() => { setEditingUserId(user.id); setUserForm({ name: user.name, email: user.email, role: user.role, phone: formatPhone(user.phone), remote_access_allowed: Boolean(user.remote_access_allowed), credential_access_allowed: Boolean(user.credential_access_allowed) }); setOpenActionMenu(""); }}><EditIcon /> Alterar</button>
-                                  <button className="danger" type="button" onClick={() => { void deleteUser(user.id); setOpenActionMenu(""); }}><TrashIcon /> Excluir</button>
-                                </div>
-                              )}
-                            </div>
-                          </td>
-                        </tr>
-                      ))}</tbody>
-                    </table>
-                  </div>
-                </section>
-              </>
-            )}
-          </section>
-        )}
+        <RegistryView actionMenuPosition={actionMenuPosition} citySuggestions={citySuggestions} clientSuggestions={clientSuggestions} currentUserCanAccessCredentials={currentUserCanAccessCredentials} currentUserCanEditMachine={currentUserCanEditMachine} currentUserCanManageUsers={currentUserCanManageUsers} currentUserCanUseRemoteAccess={currentUserCanUseRemoteAccess} deleteChatContact={deleteChatContact} deleteMachine={deleteMachine} deleteUser={deleteUser} editChatContact={editChatContact} editingMachineId={editingMachineId} editingUserId={editingUserId} machineForm={machineForm} machineMainFieldsDisabled={machineMainFieldsDisabled} openActionMenu={openActionMenu} registryMachines={registryMachines} registryMachineSort={registryMachineSort} registryTab={registryTab} saveMachine={saveMachine} saveUser={saveUser} setEditingMachineId={setEditingMachineId} setEditingUserId={setEditingUserId} setOpenActionMenu={setOpenActionMenu} setRegistryTab={setRegistryTab} setUserForm={setUserForm} showRemoteAccess={showRemoteAccess} sortedChatContacts={sortedChatContacts} sortedUsers={sortedUsers} toggleActionMenu={toggleActionMenu} toggleRegistryMachineSort={toggleRegistryMachineSort} toggleUserSort={toggleUserSort} updateMachineForm={updateMachineForm} userForm={userForm} userSort={userSort} view={view} />
 
         {transferDialogOpen && selectedChat && (
           <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="transfer-modal-title" onClick={() => setTransferDialogOpen(false)}>
@@ -3826,10 +2741,10 @@ export default function Home() {
               </div>
               <div className="modal-actions">
                 <button className="icon-button download" type="button" title="Baixar PDF" aria-label="Baixar PDF" onClick={() => downloadServicePdf(selectedMachine, pdfReadyServiceRecord(selectedServiceRecord))}><PdfDownloadIcon /></button>
-                {currentUserCanEmitReports && selectedServiceRecord.created_by === currentUserId && (
+                {canModifyRecord(selectedServiceRecord) && (
                   <button className="button primary" type="button" onClick={() => startServiceEdit(selectedServiceRecord)}>Editar atendimento</button>
                 )}
-                {(currentUserHasFullAccess || (currentUserCanEmitReports && selectedServiceRecord.created_by === currentUserId)) && (
+                {canDeleteRecord(selectedServiceRecord) && (
                   <button className="button danger" type="button" onClick={() => void deleteServiceRecord(selectedServiceRecord)}>Excluir atendimento</button>
                 )}
               </div>
@@ -3837,63 +2752,13 @@ export default function Home() {
           </div>
         )}
 
-        {profileModalOpen && (
-          <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="profile-modal-title" onClick={() => setProfileModalOpen(false)}>
-            <form className="modal-card profile-card" onSubmit={saveUserProfile} onClick={(event) => event.stopPropagation()}>
-              <div className="section-header">
-                <div>
-                  <p className="eyebrow">Usuário</p>
-                  <h2 id="profile-modal-title">Editar Usuário</h2>
-                </div>
-                <button className="button ghost" type="button" onClick={() => setProfileModalOpen(false)}>Fechar</button>
-              </div>
-              <div className="fields-grid">
-                <label className="wide">Nome exibido<input value={profileName} onChange={(event) => setProfileName(event.target.value)} placeholder={displayUserName(currentUserEmail)} autoFocus /></label>
-                <label className="wide">E-mail corporativo<input value={currentUserEmail} readOnly /></label>
-              </div>
-              <div className="modal-actions">
-                <button className="button ghost" type="button" onClick={() => setProfileModalOpen(false)}>Cancelar</button>
-                <button className="button primary" type="submit">Salvar</button>
-              </div>
-            </form>
-          </div>
-        )}
+        <ProfileModal currentUserEmail={currentUserEmail} profileModalOpen={profileModalOpen} profileName={profileName} saveUserProfile={saveUserProfile} setProfileModalOpen={setProfileModalOpen} setProfileName={setProfileName} />
 
-        {confirmDialog && (
-          <div className="modal-backdrop" role="alertdialog" aria-modal="true" aria-labelledby="confirm-dialog-title" aria-describedby="confirm-dialog-message" onClick={() => answerConfirm(false)}>
-            <div className="modal-card confirm-card" onClick={(event) => event.stopPropagation()}>
-              <h2 id="confirm-dialog-title">{confirmDialog.title}</h2>
-              <p id="confirm-dialog-message">{confirmDialog.message}</p>
-              <div className="modal-actions">
-                <button className="button ghost" type="button" onClick={() => answerConfirm(false)}>Cancelar</button>
-                <button className={confirmDialog.destructive ? "button danger-button" : "button primary"} type="button" autoFocus onClick={() => answerConfirm(true)}>{confirmDialog.confirmLabel}</button>
-              </div>
-            </div>
-          </div>
-        )}
+        <ToastStack toasts={toasts} onDismiss={dismissToast} />
 
-        {helpOpen && (
-          <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="help-modal-title" onClick={() => setHelpOpen(false)}>
-            <section className="modal-card help-card" onClick={(event) => event.stopPropagation()}>
-              <div className="section-header">
-                <div>
-                  <p className="eyebrow">Ajuda</p>
-                  <h2 id="help-modal-title">Como usar esta tela</h2>
-                </div>
-                <button className="button ghost" type="button" onClick={() => setHelpOpen(false)}>Fechar</button>
-              </div>
-              <p>{helpText(view, registryTab)}</p>
-              <div className="help-topic-list">
-                {helpSections(view, registryTab).map(([title, body]) => (
-                  <article key={title}>
-                    <h3>{title}</h3>
-                    <p>{body}</p>
-                  </article>
-                ))}
-              </div>
-            </section>
-          </div>
-        )}
+        <ConfirmDialog answerConfirm={answerConfirm} confirmDialog={confirmDialog} />
+
+        <HelpModal helpOpen={helpOpen} registryTab={registryTab} setHelpOpen={setHelpOpen} view={view} />
 
         {biometricPromptOpen && isMobileAuthDeviceState && (
           <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="biometric-modal-title" onClick={() => setBiometricPromptOpen(false)}>

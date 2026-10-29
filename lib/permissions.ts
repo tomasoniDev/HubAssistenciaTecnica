@@ -46,3 +46,34 @@ export function canUseRemoteAccess(user?: Pick<AuthorizedUser, "role" | "remote_
 export function canAccessCredentials(user?: Pick<AuthorizedUser, "role" | "credential_access_allowed"> | null) {
   return user?.role === "Admin" || Boolean(user?.credential_access_allowed);
 }
+
+// ---- Atendimentos: quem pode alterar ou excluir ----
+// Rascunho: o autor (exclusão também por acesso total).
+// Finalizado: somente Coordenação, Admin e Diretoria.
+
+export type ServiceRecordAccessInfo = {
+  created_by: string | null;
+  report_status: "Rascunho" | "Finalizado" | null;
+};
+
+export type ServiceRecordActor = { id: string; role?: UserRole | null };
+
+export function isFinalizedServiceRecord(record: Pick<ServiceRecordAccessInfo, "report_status">) {
+  return record.report_status !== "Rascunho";
+}
+
+export function canEditFinalizedReports(role?: UserRole | null) {
+  return hasFullAccess(role) || role === "Coordenador";
+}
+
+export function canModifyServiceRecord(record: ServiceRecordAccessInfo, actor: ServiceRecordActor) {
+  if (isFinalizedServiceRecord(record)) return canEditFinalizedReports(actor.role);
+  return canEmitReports(actor.role) && record.created_by === actor.id;
+}
+
+export function canDeleteServiceRecord(record: ServiceRecordAccessInfo, actor: ServiceRecordActor) {
+  if (isFinalizedServiceRecord(record)) return canEditFinalizedReports(actor.role);
+  return hasFullAccess(actor.role) || (canEmitReports(actor.role) && record.created_by === actor.id);
+}
+
+export const FINALIZED_REPORT_LOCK_MESSAGE = "Relatórios finalizados só podem ser alterados ou excluídos por Coordenação, Admin ou Diretoria.";
