@@ -6,6 +6,7 @@ import { downloadServicePdf, servicePdfBase64, servicePdfFileName, servicePdfPre
 import type { AppAdminInfo, AppAuditLog, AuthorizedUser, ChatContact, ChatConversation, ChatMessage, Machine, ServiceAttachment, ServiceRecord, ServiceTechnician, SupportContract, TravelSchedule, UserRole } from "@/lib/types";
 
 type View = "home" | "overview" | "admin" | "machineDetail" | "service" | "registry" | "schedule" | "chat";
+type RegistryMachineSortKey = "code" | "model" | "client" | "unit_city" | "vm" | "manufacture_month" | "remote_access";
 type RegistryTab = "machines" | "users" | "clients";
 type ScheduleTab = "travel" | "contracts";
 type SortDirection = "asc" | "desc";
@@ -1469,6 +1470,7 @@ export default function Home() {
   const [machineFilter, setMachineFilter] = useState("");
   const [historyFilter, setHistoryFilter] = useState("");
   const [machineSort, setMachineSort] = useState<{ key: MachineSortKey; direction: SortDirection }>({ key: "last_service", direction: "desc" });
+  const [registryMachineSort, setRegistryMachineSort] = useState<{ key: RegistryMachineSortKey; direction: SortDirection }>({ key: "code", direction: "asc" });
   const [historySort, setHistorySort] = useState<{ key: HistorySortKey; direction: SortDirection }>({ key: "service_date", direction: "desc" });
   const [userSort, setUserSort] = useState<{ key: UserSortKey; direction: SortDirection }>({ key: "name", direction: "asc" });
   const [editingMachineId, setEditingMachineId] = useState("");
@@ -2626,8 +2628,20 @@ export default function Home() {
   }, [machineFilter, machineSort, machines]);
 
   const registryMachines = useMemo(() => {
-    return [...machines].sort((a, b) => compareText(a.code, b.code));
-  }, [machines]);
+    return [...machines].sort((a, b) => {
+      const key = registryMachineSort.key;
+      const direction = registryMachineSort.direction === "asc" ? 1 : -1;
+      let result: number;
+      if (key === "manufacture_month") {
+        result = monthYearSortValue(a.manufacture_month) - monthYearSortValue(b.manufacture_month);
+      } else if (key === "remote_access") {
+        result = compareText(a.remote_access || a.access_method || "Sem acesso remoto", b.remote_access || b.access_method || "Sem acesso remoto");
+      } else {
+        result = compareText(a[key], b[key]);
+      }
+      return result * direction || compareText(a.code, b.code) || compareText(a.id, b.id);
+    });
+  }, [machines, registryMachineSort]);
 
   const filteredHistory = useMemo(() => {
     const term = historyFilter.trim().toLowerCase();
@@ -2693,6 +2707,10 @@ export default function Home() {
 
   function toggleMachineSort(key: MachineSortKey) {
     setMachineSort((current) => ({ key, direction: nextDirection(current.key === key, current.direction) }));
+  }
+
+  function toggleRegistryMachineSort(key: RegistryMachineSortKey) {
+    setRegistryMachineSort((current) => ({ key, direction: nextDirection(current.key === key, current.direction) }));
   }
 
   function toggleHistorySort(key: HistorySortKey) {
@@ -4742,7 +4760,16 @@ export default function Home() {
                   <div className="section-header"><h2>Máquinas cadastradas</h2><span>{registryMachines.length} registros</span></div>
                   <div className="table-wrap">
                     <table>
-                      <thead><tr><th>Código</th><th>Modelo</th><th>Cliente</th><th>Localização</th><th>VM</th><th>Fabricação</th><th>Acesso</th><th>Ações</th></tr></thead>
+                      <thead><tr>
+                        <th aria-sort={registryMachineSort.key === "code" ? (registryMachineSort.direction === "asc" ? "ascending" : "descending") : "none"}><button className="sort-header" type="button" onClick={() => toggleRegistryMachineSort("code")}>Código <span aria-hidden="true">{sortMark(registryMachineSort.key === "code", registryMachineSort.direction)}</span></button></th>
+                        <th aria-sort={registryMachineSort.key === "model" ? (registryMachineSort.direction === "asc" ? "ascending" : "descending") : "none"}><button className="sort-header" type="button" onClick={() => toggleRegistryMachineSort("model")}>Modelo <span aria-hidden="true">{sortMark(registryMachineSort.key === "model", registryMachineSort.direction)}</span></button></th>
+                        <th aria-sort={registryMachineSort.key === "client" ? (registryMachineSort.direction === "asc" ? "ascending" : "descending") : "none"}><button className="sort-header" type="button" onClick={() => toggleRegistryMachineSort("client")}>Cliente <span aria-hidden="true">{sortMark(registryMachineSort.key === "client", registryMachineSort.direction)}</span></button></th>
+                        <th aria-sort={registryMachineSort.key === "unit_city" ? (registryMachineSort.direction === "asc" ? "ascending" : "descending") : "none"}><button className="sort-header" type="button" onClick={() => toggleRegistryMachineSort("unit_city")}>Localização <span aria-hidden="true">{sortMark(registryMachineSort.key === "unit_city", registryMachineSort.direction)}</span></button></th>
+                        <th aria-sort={registryMachineSort.key === "vm" ? (registryMachineSort.direction === "asc" ? "ascending" : "descending") : "none"}><button className="sort-header" type="button" onClick={() => toggleRegistryMachineSort("vm")}>VM <span aria-hidden="true">{sortMark(registryMachineSort.key === "vm", registryMachineSort.direction)}</span></button></th>
+                        <th aria-sort={registryMachineSort.key === "manufacture_month" ? (registryMachineSort.direction === "asc" ? "ascending" : "descending") : "none"}><button className="sort-header" type="button" onClick={() => toggleRegistryMachineSort("manufacture_month")}>Fabricação <span aria-hidden="true">{sortMark(registryMachineSort.key === "manufacture_month", registryMachineSort.direction)}</span></button></th>
+                        <th aria-sort={registryMachineSort.key === "remote_access" ? (registryMachineSort.direction === "asc" ? "ascending" : "descending") : "none"}><button className="sort-header" type="button" onClick={() => toggleRegistryMachineSort("remote_access")}>Acesso <span aria-hidden="true">{sortMark(registryMachineSort.key === "remote_access", registryMachineSort.direction)}</span></button></th>
+                        <th>Ações</th>
+                      </tr></thead>
                       <tbody>{registryMachines.map((machine) => (
                         <tr key={machine.id}>
                           <td>{displayMachineCode(machine)}</td>
