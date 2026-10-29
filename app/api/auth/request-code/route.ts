@@ -1,6 +1,11 @@
 import { NextResponse } from "next/server";
+import { isDemoMode } from "@/lib/demo";
 import { createSupabaseAuthClient, isSupabaseServerConfigured } from "@/lib/server-supabase";
 import { getAuthorizedUserByEmail, isCorporateEmail } from "@/lib/server-auth";
+import { clientIp, consume } from "@/lib/rate-limit";
+
+const CODE_REQUEST_LIMIT_BY_EMAIL = { limit: 6, windowMs: 10 * 60 * 1000 };
+const CODE_REQUEST_LIMIT_BY_IP = { limit: 20, windowMs: 10 * 60 * 1000 };
 
 type RequestCodePayload = {
   email?: string;
@@ -39,6 +44,8 @@ function otpErrorResponse(error: OtpRequestError) {
 }
 
 export async function POST(request: Request) {
+  if (isDemoMode) return NextResponse.json({ ok: true });
+
   if (!isSupabaseServerConfigured) {
     return NextResponse.json({ error: "Configuração server-side do Supabase ausente." }, { status: 500 });
   }
@@ -53,6 +60,15 @@ export async function POST(request: Request) {
   const authorizedUser = await getAuthorizedUserByEmail(email);
   if (!authorizedUser) {
     return NextResponse.json({ error: "E-mail não cadastrado para acesso ao sistema." }, { status: 403 });
+  }
+
+  const allowed = consume(`request-email:${email}`, CODE_REQUEST_LIMIT_BY_EMAIL)
+    && consume(`request-ip:${clientIp(request)}`, CODE_REQUEST_LIMIT_BY_IP);
+  if (!allowed) {
+    return NextResponse.json(
+      { error: "Limite temporário de envio atingido. Aguarde alguns minutos e tente novamente." },
+      { status: 429 }
+    );
   }
 
   const supabase = createSupabaseAuthClient();

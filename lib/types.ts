@@ -198,6 +198,10 @@ export type ServiceRecord = {
   attachments: ServiceAttachment[] | null;
   report_status: "Rascunho" | "Finalizado" | null;
   report_recipients: string[] | null;
+  /** Indicadores da carga leve: anexos e assinatura são buscados sob demanda. */
+  has_attachments?: boolean;
+  has_signature?: boolean;
+  heavy_loaded?: boolean;
   created_by: string | null;
   created_at: string;
   updated_at: string;

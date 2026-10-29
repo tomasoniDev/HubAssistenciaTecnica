@@ -1,4 +1,5 @@
-import { NextResponse } from "next/server";
+import { NextResponse, after } from "next/server";
+import { isDemoMode } from "@/lib/demo";
 import {
   type AuthorizedSession,
   authErrorResponse,
@@ -147,9 +148,20 @@ async function safeRefreshSharePointBackup(admin: ReturnType<typeof createSupaba
   return safeBackupOperationalDataToSharePoint(admin);
 }
 
+// O backup roda depois da resposta, para o salvamento não esperar o SharePoint.
+function scheduleSharePointBackup(admin: ReturnType<typeof createSupabaseAdminClient>) {
+  after(async () => {
+    const result = await safeRefreshSharePointBackup(admin);
+    if ("error" in result && result.error) {
+      console.error("Falha ao atualizar backup no SharePoint", { error: result.error });
+    }
+  });
+}
+
 export async function POST(request: Request) {
   try {
     const session = await requireAuthorizedSession();
+    if (isDemoMode) return jsonError("Modo demonstração: nada é gravado.", 403);
     const body = (await request.json().catch(() => null)) as ActionBody | null;
     const action = body?.action ?? "";
     const payload = body?.payload ?? {};
@@ -222,8 +234,8 @@ export async function POST(request: Request) {
         }
       });
 
-      const backup = await safeRefreshSharePointBackup(admin);
-      return NextResponse.json({ data: result.data, backup });
+      scheduleSharePointBackup(admin);
+      return NextResponse.json({ data: result.data, backup: { scheduled: true } });
     }
 
     if (action === "saveUser") {
@@ -267,7 +279,7 @@ export async function POST(request: Request) {
           credential_access_allowed: userPayload.credential_access_allowed
         }
       });
-      await safeRefreshSharePointBackup(admin);
+      scheduleSharePointBackup(admin);
       return NextResponse.json({ data: result.data });
     }
 
@@ -293,7 +305,7 @@ export async function POST(request: Request) {
         entityLabel: session.email,
         details: { display_name: displayName }
       });
-      await safeRefreshSharePointBackup(admin);
+      scheduleSharePointBackup(admin);
       return NextResponse.json({ data: result.data });
     }
 
@@ -322,7 +334,7 @@ export async function POST(request: Request) {
         entityLabel: result.data.name || result.data.phone,
         details: { company: result.data.company, phone: result.data.phone }
       });
-      await safeRefreshSharePointBackup(admin);
+      scheduleSharePointBackup(admin);
       return NextResponse.json({ data: result.data });
     }
 
@@ -398,7 +410,7 @@ export async function POST(request: Request) {
           end_date: travelPayload.end_date
         }
       });
-      await safeRefreshSharePointBackup(admin);
+      scheduleSharePointBackup(admin);
       return NextResponse.json({ data: result.data });
     }
 
@@ -432,7 +444,7 @@ export async function POST(request: Request) {
           support_contract_until: contractPayload.support_contract_until
         }
       });
-      await safeRefreshSharePointBackup(admin);
+      scheduleSharePointBackup(admin);
       return NextResponse.json({ data: result.data });
     }
 
@@ -601,7 +613,7 @@ export async function POST(request: Request) {
         details: { table }
       });
       if (["machines", "authorized_users", "chat_contacts", "travel_schedules", "support_contracts"].includes(table)) {
-        await safeRefreshSharePointBackup(admin);
+        scheduleSharePointBackup(admin);
       }
       return NextResponse.json({ ok: true });
     }

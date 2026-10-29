@@ -1,6 +1,7 @@
 import "server-only";
 
 import { createClient } from "@supabase/supabase-js";
+import { DEMO_SESSION_SECRET, isDemoMode } from "@/lib/demo";
 
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseAnonKey = process.env.SUPABASE_ANON_KEY;
@@ -36,7 +37,7 @@ export function createSupabaseAdminClient() {
 }
 
 export function sessionSecret() {
-  const secret = process.env.APP_SESSION_SECRET ?? supabaseServiceRoleKey;
+  const secret = process.env.APP_SESSION_SECRET ?? supabaseServiceRoleKey ?? (isDemoMode ? DEMO_SESSION_SECRET : undefined);
   if (!secret) {
     throw new Error("APP_SESSION_SECRET ou SUPABASE_SERVICE_ROLE_KEY ausente.");
   }

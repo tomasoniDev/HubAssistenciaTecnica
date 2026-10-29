@@ -1,5 +1,6 @@
 import { jsPDF } from "jspdf";
 import type { Machine, ServiceAttachment, ServiceRecord } from "./types";
+import { hydrateServiceRecord } from "./service-record-client";
 
 const PAGE_WIDTH = 595.28;
 const PAGE_HEIGHT = 841.89;
@@ -435,7 +436,8 @@ function drawSignatureData(doc: jsPDF, record: ServiceRecord, y: number) {
   }
 }
 
-async function createServicePdf(machine: Machine, record: ServiceRecord) {
+async function createServicePdf(machine: Machine, sourceRecord: ServiceRecord) {
+  const record = await hydrateServiceRecord(sourceRecord);
   const doc = new jsPDF({ unit: "pt", format: "a4", orientation: "portrait", compress: true });
   doc.setProperties({
     title: `${reportCode(machine, record)} - ${displayMachineCode(machine)}`,

@@ -1,7 +1,13 @@
 import { NextResponse } from "next/server";
 import nodemailer from "nodemailer";
+import { isDemoMode } from "@/lib/demo";
 import { authErrorResponse, canEmitReports, requireAuthorizedSession } from "@/lib/server-auth";
 import { uploadServiceReportToSharePoint } from "@/lib/sharepoint";
+import { createSupabaseAdminClient } from "@/lib/server-supabase";
+import { consume } from "@/lib/rate-limit";
+import { EMAIL_LIMITS, clampText, decodePdfBase64, safeAttachmentName, sanitizeEmailHtml } from "@/lib/email-safety";
+
+const EMAILS_PER_USER_PER_HOUR = { limit: 40, windowMs: 60 * 60 * 1000 };
 
 type SendEmailPayload = {
   to?: string[];
@@ -58,14 +64,29 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Usuário sem permissão para enviar relatórios." }, { status: 403 });
     }
 
+    if (isDemoMode) {
+      return NextResponse.json({ error: "Modo demonstração: e-mails não são enviados." }, { status: 403 });
+    }
+
     const configError = smtpConfigurationError();
     if (configError) {
       return NextResponse.json({ error: configError }, { status: 500 });
     }
 
-    const body = (await request.json()) as SendEmailPayload;
+    if (!consume(`email-user:${session.userId}`, EMAILS_PER_USER_PER_HOUR)) {
+      return NextResponse.json({ error: "Limite de envios por hora atingido. Aguarde e tente novamente." }, { status: 429 });
+    }
+
+    const body = (await request.json().catch(() => null)) as SendEmailPayload | null;
+    if (!body) {
+      return NextResponse.json({ error: "Dados do relatório incompletos." }, { status: 400 });
+    }
+
     const to = cleanRecipients(body.to);
     const bcc = cleanRecipients(body.bcc);
+    if (to.length > EMAIL_LIMITS.maxTo || bcc.length > EMAIL_LIMITS.maxBcc) {
+      return NextResponse.json({ error: "Quantidade de destinatários acima do permitido." }, { status: 400 });
+    }
 
     if (!to.length && !bcc.length) {
       return NextResponse.json({ error: "Nenhum e-mail válido informado para envio." }, { status: 400 });
@@ -74,6 +95,16 @@ export async function POST(request: Request) {
     if (!body.pdfBase64 || !body.filename || !body.subject) {
       return NextResponse.json({ error: "Dados do relatório incompletos." }, { status: 400 });
     }
+
+    const pdfBuffer = decodePdfBase64(body.pdfBase64);
+    if (!pdfBuffer) {
+      return NextResponse.json({ error: "O anexo não é um PDF válido ou excede o tamanho permitido." }, { status: 400 });
+    }
+
+    const filename = safeAttachmentName(body.filename);
+    const subject = clampText(body.subject, EMAIL_LIMITS.maxSubject).replace(/[\r\n]+/g, " ").trim();
+    const textBody = clampText(body.text, EMAIL_LIMITS.maxText);
+    const htmlBody = sanitizeEmailHtml(clampText(body.html, EMAIL_LIMITS.maxHtml));
 
     const transporter = nodemailer.createTransport({
       host: smtpHost,
@@ -93,13 +124,13 @@ export async function POST(request: Request) {
       from: fromEmail,
       to,
       bcc,
-      subject: body.subject,
-      text: body.text || "Mensagem automática. Não responda este e-mail.\n\nO relatório de atendimento segue em anexo.",
-      html: body.html || "<p>Mensagem automática. Não responda este e-mail.</p><p>O relatório de atendimento segue em anexo.</p>",
+      subject,
+      text: textBody || "Mensagem automática. Não responda este e-mail.\n\nO relatório de atendimento segue em anexo.",
+      html: htmlBody || "<p>Mensagem automática. Não responda este e-mail.</p><p>O relatório de atendimento segue em anexo.</p>",
       attachments: [
         {
-          filename: body.filename,
-          content: Buffer.from(body.pdfBase64, "base64"),
+          filename,
+          content: pdfBuffer,
           contentType: "application/pdf"
         }
       ]
@@ -117,6 +148,21 @@ export async function POST(request: Request) {
         skipped: false,
         error: sharePointError instanceof Error ? sharePointError.message : "Falha ao salvar PDF no SharePoint."
       };
+    }
+
+    try {
+      await createSupabaseAdminClient().from("app_audit_logs").insert({
+        action: "email.report_sent",
+        entity: "service_records",
+        entity_label: filename,
+        user_id: session.userId,
+        user_email: session.email,
+        user_name: session.user.name,
+        user_role: session.user.role,
+        details: { to, bcc, subject, machine_code: body.machineCode ?? null }
+      });
+    } catch {
+      // A auditoria não deve impedir a resposta de um envio já concluído.
     }
 
     return NextResponse.json({ id: info.messageId ?? null, accepted: info.accepted ?? [], sharePoint });

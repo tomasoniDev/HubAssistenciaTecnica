@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { demoAppData, isDemoMode } from "@/lib/demo";
 import { readdirSync, statSync } from "fs";
 import path from "path";
 import { authErrorResponse, canAccessCredentials, hasFullAccess, requireAuthorizedSession } from "@/lib/server-auth";
@@ -105,9 +106,26 @@ function secretRotationInfo(row?: { key?: string | null; value?: unknown; update
   };
 }
 
+// Anexos e assinatura (imagens em base64) ficam fora da carga inicial; o app
+// busca esses campos em /api/service-record quando o atendimento é aberto.
+function lightServiceRecords(rows: unknown) {
+  if (!Array.isArray(rows)) return [];
+  return rows.map((row) => {
+    const { attachments, customer_signature: signature, ...rest } = row as Record<string, unknown>;
+    return {
+      ...rest,
+      attachments: null,
+      customer_signature: null,
+      has_attachments: Array.isArray(attachments) && attachments.length > 0,
+      has_signature: Boolean(signature)
+    };
+  });
+}
+
 export async function GET() {
   try {
     const session = await requireAuthorizedSession();
+    if (isDemoMode) return NextResponse.json(demoAppData());
     const admin = createSupabaseAdminClient();
 
     const { data: machineRows, error: machineError } = await admin
@@ -146,6 +164,7 @@ export async function GET() {
     const machines = (machineRows ?? []).map((machine) => ({
       ...EMPTY_MACHINE_CREDENTIALS,
       ...machine,
+      service_records: lightServiceRecords(machine.service_records),
       ...(credentialByMachine.get(machine.id) ?? {})
     }));
 

@@ -3,11 +3,12 @@ import "server-only";
 import { cookies } from "next/headers";
 import { createHmac, timingSafeEqual } from "crypto";
 import type { AuthorizedUser, UserRole } from "@/lib/types";
+import { demoUser, isDemoMode } from "@/lib/demo";
+import { isCorporateEmail } from "@/lib/permissions";
 import { createSupabaseAdminClient, sessionSecret } from "@/lib/server-supabase";
 
 export const APP_SESSION_COOKIE = "tomasoni_app_session";
 const SESSION_TTL_SECONDS = 7 * 24 * 60 * 60;
-const ALLOWED_EMAIL_DOMAINS = ["tomasoni.ind.br", "tomasoni.in.br"];
 
 export type AppSession = {
   userId: string;
@@ -19,48 +20,17 @@ export type AuthorizedSession = AppSession & {
   user: AuthorizedUser;
 };
 
-export function isCorporateEmail(email: string) {
-  const normalized = email.trim().toLowerCase();
-  return ALLOWED_EMAIL_DOMAINS.some((domain) => normalized.endsWith(`@${domain}`));
-}
-
-export function hasFullAccess(role?: UserRole | null) {
-  return role === "Admin" || role === "Diretoria";
-}
-
-export function canManageUsers(role?: UserRole | null) {
-  return role === "Admin" || role === "Diretoria" || role === "Coordenador";
-}
-
-export function canEditMachine(role?: UserRole | null) {
-  return role === "Admin" || role === "Diretoria" || role === "Engenharia" || role === "Coordenador";
-}
-
-export function canManageContracts(role?: UserRole | null) {
-  return role === "Admin" || role === "Diretoria" || role === "Comercial";
-}
-
-export function canEmitReports(role?: UserRole | null) {
-  return role === "Admin"
-    || role === "Diretoria"
-    || role === "Engenharia"
-    || role === "Coordenador"
-    || role === "Montagem"
-    || role === "Montagem Elétrica"
-    || role === "Montagem Mecânica";
-}
-
-export function canEditSchedule(role?: UserRole | null) {
-  return role === "Admin" || role === "Diretoria" || role === "Comercial";
-}
-
-export function canUseRemoteAccess(user?: Pick<AuthorizedUser, "role" | "remote_access_allowed"> | null) {
-  return user?.role === "Admin" || Boolean(user?.remote_access_allowed);
-}
-
-export function canAccessCredentials(user?: Pick<AuthorizedUser, "role" | "credential_access_allowed"> | null) {
-  return user?.role === "Admin" || Boolean(user?.credential_access_allowed);
-}
+export {
+  canAccessCredentials,
+  canEditMachine,
+  canEditSchedule,
+  canEmitReports,
+  canManageContracts,
+  canManageUsers,
+  canUseRemoteAccess,
+  hasFullAccess,
+  isCorporateEmail
+} from "@/lib/permissions";
 
 function base64Url(value: string) {
   return Buffer.from(value, "utf8").toString("base64url");
@@ -136,6 +106,7 @@ export async function getRawAppSession() {
 
 export async function getAuthorizedUserByEmail(email: string) {
   if (!isCorporateEmail(email)) return null;
+  if (isDemoMode) return demoUser;
   const admin = createSupabaseAdminClient();
   const { data } = await admin
     .from("authorized_users")
@@ -161,5 +132,6 @@ export async function requireAuthorizedSession(): Promise<AuthorizedSession> {
 
 export function authErrorResponse(error: unknown) {
   if (error instanceof Response) return error;
+  console.error("Erro não tratado em rota da API", error);
   return new Response("Não foi possível validar a sessão.", { status: 500 });
 }

@@ -3,1431 +3,196 @@
 import { ChangeEvent, FormEvent, MouseEvent as ReactMouseEvent, PointerEvent, useEffect, useMemo, useRef, useState } from "react";
 import Image from "next/image";
 import { downloadServicePdf, servicePdfBase64, servicePdfFileName, servicePdfPreviewUrl } from "@/lib/pdf";
+import { hydrateServiceRecord, needsHeavyFields } from "@/lib/service-record-client";
+import { ALLOWED_EMAIL_DOMAINS, canEditMachine, canEditSchedule, canEmitReports, canManageContracts, canManageUsers, hasFullAccess, isCorporateEmail } from "@/lib/permissions";
 import type { AppAdminInfo, AppAuditLog, AuthorizedUser, ChatContact, ChatConversation, ChatMessage, Machine, ServiceAttachment, ServiceRecord, ServiceTechnician, SupportContract, TravelSchedule, UserRole } from "@/lib/types";
-
-type View = "home" | "overview" | "admin" | "machineDetail" | "service" | "registry" | "schedule" | "chat";
-type RegistryMachineSortKey = "code" | "model" | "client" | "unit_city" | "vm" | "manufacture_month" | "remote_access";
-type RegistryTab = "machines" | "users" | "clients";
-type ScheduleTab = "travel" | "contracts";
-type SortDirection = "asc" | "desc";
-type MachineSortKey = "code" | "model" | "client" | "unit_city" | "serial" | "software_version" | "manufacture_month" | "vm" | "last_service";
-type HistorySortKey = "service_date" | "equipment" | "technician_name" | "issue_summary";
-type UserSortKey = "name" | "email" | "role";
-type TravelSortKey = "start_date" | "end_date" | "code" | "client" | "technicians" | "status" | "reason" | "updated_at";
-type RemoteAccess = "SINEMA" | "VNC" | "Sem acesso remoto";
-type ServiceType = "Acesso remoto" | "Visita técnica";
-type ThemeMode = "light" | "dark";
-type ContractType = "Seg-Sex" | "Seg-Sab" | "Garantia";
-type ContractStatus = "Ativo" | "Inativo" | "Em negociação";
-type ActionMenuPosition = { top: number; right: number };
-type RemoteAccessStatus = "Online" | "Offline" | "Ocupado";
-type OnlineTechnician = { email: string; name: string; role?: string | null; status?: RemoteAccessStatus; onlineAt?: string };
-type ServicePreviewState = { machineId: string; record: ServiceRecord; recipients: string[]; pdfUrl: string; finalizeOnSend?: boolean };
-type AppSessionPayload = {
-  session?: { userId: string; email: string; expiresAt?: number } | null;
-  user?: AuthorizedUser | null;
-};
-type AppDataPayload = AppSessionPayload & {
-  machines?: Machine[];
-  authorizedUsers?: AuthorizedUser[];
-  travelSchedules?: TravelSchedule[];
-  supportContracts?: SupportContract[];
-  chatContacts?: ChatContact[];
-  chatConversations?: ChatConversation[];
-  adminInfo?: AppAdminInfo | null;
-  error?: string;
-};
-type LeafletLayerTarget = LeafletMap | LeafletLayerGroup;
-type LeafletMap = {
-  fitBounds: (bounds: [number, number][], options?: Record<string, unknown>) => LeafletMap;
-  getZoom: () => number;
-  hasLayer: (layer: LeafletLayerGroup) => boolean;
-  addLayer: (layer: LeafletLayerGroup) => LeafletMap;
-  removeLayer: (layer: LeafletLayerGroup) => LeafletMap;
-  on: (event: string, handler: () => void) => LeafletMap;
-  off: (event: string, handler: () => void) => LeafletMap;
-  invalidateSize: () => LeafletMap;
-  remove: () => void;
-  setView: (center: [number, number], zoom: number) => LeafletMap;
-};
-type LeafletLayerGroup = {
-  addTo: (map: LeafletMap) => LeafletLayerGroup;
-  clearLayers: () => LeafletLayerGroup;
-};
-type LeafletMarker = {
-  addTo: (target: LeafletLayerTarget) => LeafletMarker;
-  bindPopup: (content: string) => LeafletMarker;
-};
-type LeafletTileLayer = {
-  addTo: (map: LeafletMap) => LeafletTileLayer;
-  on: (event: string, handler: () => void) => LeafletTileLayer;
-  remove: () => void;
-};
-type LeafletNamespace = {
-  map: (element: HTMLElement, options?: Record<string, unknown>) => LeafletMap;
-  tileLayer: (url: string, options?: Record<string, unknown>) => LeafletTileLayer;
-  layerGroup: () => LeafletLayerGroup;
-  circleMarker: (center: [number, number], options?: Record<string, unknown>) => LeafletMarker;
-};
-
-type MachineFormState = {
-  code: string;
-  mechanical_list: string;
-  software_code: string;
-  ip_range: string;
-  vm: string;
-  serial: string;
-  description: string;
-  model: string;
-  client: string;
-  unit_city: string;
-  manufacture_month: string;
-  software_version: string;
-  remote_access: RemoteAccess;
-  vnc_ip: string;
-  vnc_user: string;
-  vnc_password: string;
-  vnc_vm_password: string;
-  vnc_notes: string;
-  sinema_url: string;
-  sinema_user: string;
-  sinema_password: string;
-  sinema_notes: string;
-};
-
-type AuthorizedUserFormState = {
-  name: string;
-  email: string;
-  role: UserRole;
-  phone: string;
-  remote_access_allowed: boolean;
-  credential_access_allowed: boolean;
-};
-
-type ChatContactFormState = {
-  name: string;
-  company: string;
-  phone: string;
-};
-
-type TravelScheduleFormState = {
-  start_date: string;
-  end_date: string;
-  code: string;
-  client: string;
-  technicians: string;
-  status: string;
-  reason: string;
-};
-
-type SupportContractFormState = {
-  machine_id: string;
-  code: string;
-  client: string;
-  serial: string;
-  contract_type: string;
-  support_contract_until: string;
-  status: ContractStatus;
-};
-
-const ALLOWED_EMAIL_DOMAINS = ["tomasoni.ind.br", "tomasoni.in.br"];
-const DEFAULT_MESSAGE = "Consulte uma máquina pelo código ou selecione uma linha da tabela.";
-const GENERIC_AUTH_MESSAGE = "Não foi possível iniciar o acesso. Verifique o e-mail corporativo e tente novamente.";
-const AUTH_CONFIRMED_AT_KEY = "tomasoni-servicecore-auth-confirmed-at";
-const AUTH_CONFIRMATION_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
-const BIOMETRIC_EMAIL_KEY = "tomasoni-servicecore-biometric-email";
-const BIOMETRIC_CREDENTIAL_KEY = "tomasoni-servicecore-biometric-credential";
-const BIOMETRIC_PROMPT_DISMISSED_KEY = "tomasoni-servicecore-biometric-dismissed";
-const BIOMETRIC_SESSION_VERIFIED_KEY = "tomasoni-servicecore-biometric-session-verified";
-const THEME_KEY = "tomasoni-servicecore-theme";
-const REMOTE_ACCESS_STATUS_KEY = "tomasoni-servicecore-remote-access-status";
-const SERVICE_EMAIL_SUGGESTIONS_KEY = "tomasoni-servicecore-service-email-suggestions";
-const PWA_SW_RELOAD_KEY = "tomasoni-servicecore-sw-reload";
-const MAX_SERVICE_ATTACHMENTS = 6;
-const INTERNAL_SERVICE_REPORT_RECIPIENTS = [
-  "comercial@tomasoni.ind.br",
-  "celia.bolgenhagen@tomasoni.ind.br",
-  "maria.lukaszevski@tomasoni.ind.br",
-  "raquel.bordim@tomasoni.ind.br"
-];
-const REMOTE_ACCESS_OPTIONS: RemoteAccess[] = ["Sem acesso remoto", "SINEMA", "VNC"];
-const SERVICE_TYPE_OPTIONS: ServiceType[] = ["Acesso remoto", "Visita técnica"];
-const CONTRACT_TYPE_OPTIONS: ContractType[] = ["Seg-Sex", "Seg-Sab", "Garantia"];
-const CONTRACT_STATUS_OPTIONS: ContractStatus[] = ["Ativo", "Em negociação", "Inativo"];
-const SOFTWARE_OPTIONS = [
-  ...Array.from({ length: 9 }, (_, index) => `TIA Portal V${index + 13}`),
-  ...Array.from({ length: 5 }, (_, index) => `Scout 4.${index + 4}`)
-];
-const VM_OPTIONS = Array.from({ length: 9 }, (_, index) => `V${index + 13}`);
-const USER_ROLE_OPTIONS: UserRole[] = ["Admin", "Diretoria", "Coordenador", "Engenharia", "Montagem Elétrica", "Montagem Mecânica", "Controladoria", "Comercial"];
-const TRAVEL_STATUS_OPTIONS = ["A definir", "Planejado", "Em andamento", "Concluido", "Cancelado"];
-const TRAVEL_CODE_PATTERN = /^C\d{3}$/;
-const STATE_CENTERS: Record<string, [number, number]> = {
-  AC: [-9.0238, -70.812],
-  AL: [-9.5713, -36.782],
-  AP: [1.3545, -51.916],
-  AM: [-3.4168, -65.856],
-  BA: [-12.5797, -41.7007],
-  CE: [-5.4984, -39.3206],
-  DF: [-15.7998, -47.8645],
-  ES: [-19.1834, -40.3089],
-  GO: [-15.827, -49.8362],
-  MA: [-5.42, -45.44],
-  MT: [-12.6819, -56.9211],
-  MS: [-20.7722, -54.7852],
-  MG: [-18.5122, -44.555],
-  PA: [-3.79, -52.48],
-  PB: [-7.24, -36.78],
-  PR: [-24.89, -51.55],
-  PE: [-8.38, -37.86],
-  PI: [-6.6, -42.28],
-  RJ: [-22.25, -42.66],
-  RN: [-5.81, -36.59],
-  RS: [-30.17, -53.5],
-  RO: [-10.83, -63.34],
-  RR: [2.05, -61.39],
-  SC: [-27.33, -50.48],
-  SP: [-22.19, -48.79],
-  SE: [-10.57, -37.45],
-  TO: [-10.25, -48.25]
-};
-
-function mapPointPosition(center: [number, number]) {
-  const [lat, lon] = center;
-  const left = Math.min(92, Math.max(8, ((lon + 74) / 40) * 100));
-  const top = Math.min(92, Math.max(8, ((6 - lat) / 40) * 100));
-  return { left: `${left}%`, top: `${top}%` };
-}
-const EMPTY_MACHINE_FORM: MachineFormState = {
-  code: "",
-  mechanical_list: "",
-  software_code: "",
-  ip_range: "",
-  vm: "",
-  serial: "",
-  description: "",
-  model: "",
-  client: "",
-  unit_city: "",
-  manufacture_month: "",
-  software_version: "",
-  remote_access: "Sem acesso remoto",
-  vnc_ip: "",
-  vnc_user: "",
-  vnc_password: "",
-  vnc_vm_password: "",
-  vnc_notes: "",
-  sinema_url: "",
-  sinema_user: "",
-  sinema_password: "",
-  sinema_notes: ""
-};
-const EMPTY_USER_FORM: AuthorizedUserFormState = {
-  name: "",
-  email: "",
-  role: "Montagem Elétrica",
-  phone: "",
-  remote_access_allowed: false,
-  credential_access_allowed: false
-};
-const EMPTY_CHAT_CONTACT_FORM: ChatContactFormState = {
-  name: "",
-  company: "",
-  phone: ""
-};
-const EMPTY_TRAVEL_FORM: TravelScheduleFormState = {
-  start_date: "",
-  end_date: "",
-  code: "",
-  client: "",
-  technicians: "",
-  status: "A definir",
-  reason: ""
-};
-const EMPTY_CONTRACT_FORM: SupportContractFormState = {
-  machine_id: "",
-  code: "",
-  client: "",
-  serial: "",
-  contract_type: "",
-  support_contract_until: "",
-  status: "Ativo"
-};
-const MACHINE_SAFE_SELECT = `
-  id,
-  code,
-  model,
-  client,
-  unit_city,
-  serial,
-  description,
-  manufacture_month,
-  mechanical_list,
-  software_code,
-  ip_range,
-  vm,
-  software_version,
-  access_method,
-  remote_access,
-  support_contract_active,
-  support_contract_type,
-  support_contract_until,
-  created_at,
-  updated_at,
-  machine_emails(*),
-  service_records(*)
-`;
-const EMPTY_MACHINE_CREDENTIALS = {
-  vnc_ip: null,
-  vnc_user: null,
-  vnc_password: null,
-  vnc_vm_password: null,
-  vnc_notes: null,
-  sinema_url: null,
-  sinema_user: null,
-  sinema_password: null,
-  sinema_notes: null
-};
-
-async function apiRequest<T>(url: string, init?: RequestInit) {
-  const response = await fetch(url, {
-    ...init,
-    credentials: "include",
-    headers: {
-      "Content-Type": "application/json",
-      ...(init?.headers ?? {})
-    }
-  });
-  const data = await response.json().catch(() => null) as (T & { error?: string }) | null;
-  if (!response.ok) {
-    throw new Error(data?.error ?? "Não foi possível concluir a operação.");
-  }
-  return data as T;
-}
-
-async function appAction<T>(action: string, payload: Record<string, unknown> = {}) {
-  return apiRequest<{ data?: T; ok?: boolean; backup?: unknown }>("/api/app-action", {
-    method: "POST",
-    body: JSON.stringify({ action, payload })
-  });
-}
-
-function formatDate(value?: string | null) {
-  if (!value) return "-";
-  if (/^\d{2}\/\d{2}\/\d{4}$/.test(value)) return value;
-  const [year, month, day] = value.split("-");
-  if (!year || !month || !day) return value;
-  return `${day}/${month}/${year}`;
-}
-
-function onlyDigits(value: string) {
-  return value.replace(/\D/g, "");
-}
-
-function formatPhone(value?: string | null) {
-  const digits = onlyDigits(String(value ?? "")).slice(0, 11);
-  if (!digits) return "";
-  if (digits.length <= 2) return `(${digits}`;
-  if (digits.length <= 6) return `(${digits.slice(0, 2)}) ${digits.slice(2)}`;
-  if (digits.length <= 10) return `(${digits.slice(0, 2)}) ${digits.slice(2, 6)}-${digits.slice(6)}`;
-  return `(${digits.slice(0, 2)}) ${digits.slice(2, 7)}-${digits.slice(7)}`;
-}
-
-function formatFullDateInput(value: string) {
-  const digits = onlyDigits(value).slice(0, 8);
-  if (digits.length <= 2) return digits;
-  if (digits.length <= 4) return `${digits.slice(0, 2)}/${digits.slice(2)}`;
-  return `${digits.slice(0, 2)}/${digits.slice(2, 4)}/${digits.slice(4)}`;
-}
-
-function formatDayMonthInput(value: string) {
-  const digits = onlyDigits(value).slice(0, 4);
-  if (digits.length <= 2) return digits;
-  return `${digits.slice(0, 2)}/${digits.slice(2)}`;
-}
-
-function formatTravelClientCodeInput(value: string) {
-  const digits = onlyDigits(value).slice(0, 3);
-  if (!digits && !value.trim()) return "";
-  return `C${digits}`;
-}
-
-function formatMachineProjectCodeInput(value: string) {
-  const digits = onlyDigits(value);
-  const suffix = (digits.startsWith("665") ? digits.slice(3) : digits).slice(0, 4);
-  if (!suffix && !value.trim()) return "";
-  return `T-665 ${suffix}`;
-}
-
-function formatServiceDateTimeInput(value: string) {
-  const digits = onlyDigits(value).slice(0, 10);
-  if (digits.length <= 2) return digits;
-  if (digits.length <= 4) return `${digits.slice(0, 2)}/${digits.slice(2)}`;
-  if (digits.length <= 6) return `${digits.slice(0, 2)}/${digits.slice(2, 4)}/${digits.slice(4)}`;
-  if (digits.length <= 8) return `${digits.slice(0, 2)}/${digits.slice(2, 4)}/${digits.slice(4, 6)} - ${digits.slice(6)}`;
-  return `${digits.slice(0, 2)}/${digits.slice(2, 4)}/${digits.slice(4, 6)} - ${digits.slice(6, 8)}:${digits.slice(8)}`;
-}
-
-function formatMonthYearInput(value: string) {
-  const digits = onlyDigits(value).slice(0, 6);
-  if (digits.length <= 2) return digits;
-  return `${digits.slice(0, 2)}/${digits.slice(2)}`;
-}
-
-function normalizeFullDate(value: string) {
-  const trimmed = value.trim();
-  if (!trimmed) return "";
-  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return trimmed;
-  const match = trimmed.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
-  if (!match) return trimmed;
-  return `${match[3]}-${match[2]}-${match[1]}`;
-}
-
-function extractDateFromServiceDateTime(value: string) {
-  const normalized = value.trim();
-  const match = normalized.match(/^(\d{2})\/(\d{2})\/(\d{2}|\d{4})(?:\s*-\s*\d{2}:\d{2})?$/);
-  if (!match) return "";
-  const year = match[3].length === 2 ? `20${match[3]}` : match[3];
-  return `${year}-${match[2]}-${match[1]}`;
-}
-
-function daysUntil(value?: string | null) {
-  if (!value) return null;
-  const today = new Date();
-  const target = new Date(`${value}T00:00:00`);
-  if (Number.isNaN(target.getTime())) return null;
-  today.setHours(0, 0, 0, 0);
-  return Math.ceil((target.getTime() - today.getTime()) / 86400000);
-}
-
-function addDays(value?: string | null, days = 0) {
-  if (!value) return "";
-  const target = new Date(`${value}T00:00:00`);
-  if (Number.isNaN(target.getTime())) return "";
-  target.setDate(target.getDate() + days);
-  return target.toISOString().slice(0, 10);
-}
-
-function secretRotationStatus(days: number | null) {
-  if (days === null) return "warning";
-  if (days < 0) return "danger";
-  if (days <= 30) return "warning";
-  return "success";
-}
-
-function secretRotationMessage(days: number | null) {
-  if (days === null) return "Configure a data da última troca para ativar o acompanhamento.";
-  if (days < 0) return `Troca vencida há ${Math.abs(days)} dia${Math.abs(days) === 1 ? "" : "s"}.`;
-  if (days === 0) return "Troca vence hoje.";
-  return `Faltam ${days} dia${days === 1 ? "" : "s"} para a próxima troca.`;
-}
-
-function formatMonthYear(value?: string | null) {
-  if (!value) return "-";
-  const [year, month] = value.split("-");
-  const shortMatch = value.match(/^(\d{2})\/(\d{2})$/);
-  if (shortMatch) return `${shortMatch[1]}/20${shortMatch[2]}`;
-  if (/^\d{2}\/\d{4}$/.test(value)) return value;
-  if (!year || !month) return value;
-  return `${month}/${year}`;
-}
-
-function monthYearSortValue(value?: string | null) {
-  const formatted = formatMonthYear(value);
-  const match = formatted.match(/^(\d{2})\/(\d{4})$/);
-  if (!match) return Number.MAX_SAFE_INTEGER;
-  return Number(match[2]) * 100 + Number(match[1]);
-}
-
-function normalizeMonthYear(value: string) {
-  const trimmed = value.trim();
-  if (!trimmed) return null;
-  const shortMatch = trimmed.match(/^(\d{2})\/(\d{2})$/);
-  if (shortMatch) return `${shortMatch[1]}/20${shortMatch[2]}`;
-  const match = trimmed.match(/^(\d{2})\/(\d{4})$/);
-  if (!match) return trimmed;
-  return `${match[1]}/${match[2]}`;
-}
-
-function machineHasRemoteAccess(remoteAccess: string) {
-  return remoteAccess !== "Sem acesso remoto";
-}
-
-function normalizeRemoteAccess(value?: string | null): RemoteAccess {
-  if (value === "SINEMA" || value === "VNC") return value;
-  return "Sem acesso remoto";
-}
-
-function normalizeServiceType(value?: string | null): ServiceType {
-  if (value === "Visita técnica") return "Visita técnica";
-  return "Acesso remoto";
-}
-
-function displayMachineCode(machine?: Pick<Machine, "code" | "model" | "client"> | null) {
-  return machine?.code?.trim() || machine?.model?.trim() || machine?.client?.trim() || "Máquina sem código";
-}
-
-function normalizeLookup(value?: string | null) {
-  return value?.trim().toUpperCase() ?? "";
-}
-
-function serviceMachineLookupLabel(machine?: Machine | null) {
-  if (!machine) return "";
-  const code = displayMachineCode(machine);
-  const details = [machine.client, machine.model]
-    .map((item) => item?.trim())
-    .filter(Boolean)
-    .join(" - ");
-  return details ? `${code} - ${details}` : code;
-}
-
-function serviceTechnicianLookupLabel(user: AuthorizedUser) {
-  const details = [user.email, user.role].filter(Boolean).join(" - ");
-  return details ? `${user.name} - ${details}` : user.name;
-}
-
-function isAssemblyRole(role?: string | null) {
-  return String(role ?? "").trim().toLowerCase().startsWith("montagem");
-}
-
-function normalizeLookupText(value?: string | null) {
-  return value?.trim().normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase() ?? "";
-}
-
-function findMachineByLookup(machines: Machine[], value: string) {
-  const target = normalizeLookupText(value);
-  if (!target) return null;
-
-  return machines.find((machine) => {
-    const candidates = [
-      machine.id,
-      machine.code,
-      displayMachineCode(machine),
-      serviceMachineLookupLabel(machine),
-      machine.code && machine.client ? `${machine.code} - ${machine.client}` : "",
-      machine.code && machine.model ? `${machine.code} - ${machine.model}` : ""
-    ];
-    return candidates.some((candidate) => normalizeLookupText(candidate) === target);
-  }) ?? null;
-}
-
-function parseServiceTechnicianInput(value: string, users: AuthorizedUser[]) {
-  const seen = new Set<string>();
-  return value
-    .split(/[;,\n]/)
-    .map((item) => item.trim())
-    .filter(Boolean)
-    .map((item): ServiceTechnician => {
-      const normalized = normalizeLookupText(item);
-      const user = users.find((candidate) => {
-        const candidates = [candidate.name, candidate.email, serviceTechnicianLookupLabel(candidate)];
-        return candidates.some((candidateValue) => normalizeLookupText(candidateValue) === normalized);
-      });
-      if (user) return { id: user.id, name: user.name, email: user.email, role: user.role };
-      return { name: item, email: null, role: null };
-    })
-    .filter((technician) => {
-      const key = normalizeLookupText(technician.email || technician.name);
-      if (!key || seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
-}
-
-function formatServiceTechniciansInput(technicians?: ServiceTechnician[] | null) {
-  return (technicians ?? []).map((technician) => technician.name).filter(Boolean).join("; ");
-}
-
-function serviceRecordWithTechnicianRole(record: ServiceRecord, users: AuthorizedUser[]) {
-  if (record.technician_role) return record;
-  const technicianEmail = normalizeLookupText(record.technician_email);
-  if (!technicianEmail) return record;
-  const technician = users.find((user) => normalizeLookupText(user.email) === technicianEmail);
-  return technician?.role ? { ...record, technician_role: technician.role } : record;
-}
-
-function contractMatchesMachine(contract: SupportContract, machine: Machine) {
-  const contractSerial = normalizeLookup(contract.serial);
-  const machineSerial = normalizeLookup(machine.serial);
-  if (contractSerial && machineSerial && contractSerial === machineSerial) return true;
-  if (contract.machine_id && contract.machine_id === machine.id) return true;
-  const contractCode = normalizeLookup(contract.code);
-  const machineCode = normalizeLookup(machine.code);
-  return Boolean(contractCode && machineCode && contractCode === machineCode);
-}
-
-function contractStatus(contract?: SupportContract | null): ContractStatus {
-  if (!contract) return "Inativo";
-  if (contract.status === "Ativo" || contract.status === "Inativo" || contract.status === "Em negociação") {
-    return contract.status;
-  }
-  return contract.active ? "Ativo" : "Inativo";
-}
-
-function isActiveContract(contract?: SupportContract | null) {
-  return contractStatus(contract) === "Ativo";
-}
-
-function isNegotiatingContract(contract?: SupportContract | null) {
-  return contractStatus(contract) === "Em negociação";
-}
-
-function sortContractsByRelevance(a: SupportContract, b: SupportContract) {
-  const statusWeight: Record<ContractStatus, number> = { "Ativo": 3, "Em negociação": 2, "Inativo": 1 };
-  const statusDiff = statusWeight[contractStatus(b)] - statusWeight[contractStatus(a)];
-  if (statusDiff) return statusDiff;
-  return compareDate(b.support_contract_until, a.support_contract_until);
-}
-
-function latestContractForMachine(contracts: SupportContract[], machine?: Machine | null) {
-  if (!machine) return undefined;
-  return contracts.filter((contract) => contractMatchesMachine(contract, machine)).sort(sortContractsByRelevance)[0];
-}
-
-function machineFormFromMachine(machine?: Machine | null): MachineFormState {
-  if (!machine) return EMPTY_MACHINE_FORM;
-  return {
-    code: machine.code ?? "",
-    mechanical_list: machine.mechanical_list ?? "",
-    software_code: machine.software_code ?? "",
-    ip_range: machine.ip_range ?? "",
-    vm: machine.vm ?? "",
-    serial: machine.serial ?? "",
-    description: (machine.description ?? "").slice(0, 160),
-    model: machine.model ?? "",
-    client: machine.client ?? "",
-    unit_city: machine.unit_city ?? "",
-    manufacture_month: formatMonthYear(machine.manufacture_month) === "-" ? "" : formatMonthYear(machine.manufacture_month),
-    software_version: machine.software_version ?? "",
-    remote_access: normalizeRemoteAccess(machine.remote_access ?? machine.access_method),
-    vnc_ip: machine.vnc_ip ?? "",
-    vnc_user: machine.vnc_user ?? "",
-    vnc_password: machine.vnc_password ?? "",
-    vnc_vm_password: machine.vnc_vm_password ?? "",
-    vnc_notes: machine.vnc_notes ?? "",
-    sinema_url: machine.sinema_url ?? "",
-    sinema_user: machine.sinema_user ?? "",
-    sinema_password: machine.sinema_password ?? "",
-    sinema_notes: machine.sinema_notes ?? ""
-  };
-}
-
-function parseEmails(value: string) {
-  return value
-    .split(/[;,\n]/)
-    .map((email) => email.trim())
-    .filter(Boolean);
-}
-
-function uniqueValidEmails(emails: (string | null | undefined)[]) {
-  const seen = new Set<string>();
-  return emails
-    .map((email) => String(email ?? "").trim().toLowerCase())
-    .filter((email) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))
-    .filter((email) => {
-      if (seen.has(email)) return false;
-      seen.add(email);
-      return true;
-    });
-}
-
-function serviceReportRecipients(clientRecipients: string[], technicianEmail?: string | null) {
-  return uniqueValidEmails([...clientRecipients, ...INTERNAL_SERVICE_REPORT_RECIPIENTS, technicianEmail]);
-}
-
-function clientServiceRecipients(recipients: string[], technicianEmail?: string | null) {
-  const automaticRecipients = new Set(serviceReportRecipients([], technicianEmail));
-  return uniqueValidEmails(recipients).filter((email) => !automaticRecipients.has(email));
-}
-
-function serviceEmailSubjectDate(record: ServiceRecord) {
-  const startDate = extractDateFromServiceDateTime(record.service_start ?? "");
-  return formatDate(startDate || record.service_date);
-}
-
-function serviceEmailSubject(machine: Machine, record: ServiceRecord) {
-  return [
-    "Relatório de atendimento",
-    machine.client || "Cliente não informado",
-    serviceEmailSubjectDate(record),
-    machine.model || displayMachineCode(machine)
-  ].join(" - ");
-}
-
-function serviceEmailTechnicians(record: ServiceRecord) {
-  const seen = new Set<string>();
-  return [
-    record.technician_name,
-    ...(record.support_technicians ?? []).map((technician) => technician?.name)
-  ]
-    .map((name) => String(name ?? "").trim())
-    .filter(Boolean)
-    .filter((name) => {
-      const key = normalizeLookupText(name);
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
-}
-
-function serviceEmailMessage(machine: Machine, record: ServiceRecord) {
-  const model = machine.model || displayMachineCode(machine);
-  const client = machine.client || "cliente não informado";
-  const unitCity = machine.unit_city || "unidade/cidade não informada";
-  const start = record.service_start || formatDate(record.service_date);
-  const end = record.service_end || "-";
-  const equipment = record.equipment || "-";
-  const machineCode = displayMachineCode(machine);
-  const serial = machine.serial || "-";
-  const technicians = serviceEmailTechnicians(record);
-  const techniciansLabel = technicians.length > 1 ? "Técnicos" : "Técnico";
-  const techniciansValue = technicians.join("; ") || "-";
-  const serviceType = record.service_type || "-";
-  const mainMessage = `Relatório de atendimento técnico ao ${model} da ${client}, ${unitCity}, de ${start} a ${end}.`;
-  const text = `${mainMessage}\n\nEquipamento: ${equipment}\nCódigo da máquina: ${machineCode}\nNúmero de série: ${serial}\n${techniciansLabel}: ${techniciansValue}\nTipo: ${serviceType}\n\n\nMensagem automática. Não responda este e-mail.\n\nO relatório de atendimento segue em anexo.`;
-  const html = `<p>${escapeHtml(mainMessage)}</p><p><strong>Equipamento:</strong> ${escapeHtml(equipment)}<br/><strong>Código da máquina:</strong> ${escapeHtml(machineCode)}<br/><strong>Número de série:</strong> ${escapeHtml(serial)}<br/><strong>${techniciansLabel}:</strong> ${escapeHtml(techniciansValue)}<br/><strong>Tipo:</strong> ${escapeHtml(serviceType)}</p><p style="margin-top: 28px;">Mensagem automática. Não responda este e-mail.</p><p>O relatório de atendimento segue em anexo.</p>`;
-  return { text, html };
-}
-
-function serviceReportStatus(record: ServiceRecord) {
-  return record.report_status === "Rascunho" ? "Rascunho" : "Finalizado";
-}
-
-function isServiceDraft(record: ServiceRecord) {
-  return serviceReportStatus(record) === "Rascunho";
-}
-
-function finalizedServiceRecords(machine?: Machine | null) {
-  return (machine?.service_records ?? []).filter((record) => !isServiceDraft(record));
-}
-
-function lastServiceDate(machine: Machine) {
-  const dates = finalizedServiceRecords(machine).map((record) => record.service_date).filter(Boolean);
-  return dates.sort().at(-1) ?? "";
-}
-
-function daysSince(value?: string | null) {
-  if (!value) return null;
-  const target = new Date(`${value}T00:00:00`);
-  if (Number.isNaN(target.getTime())) return null;
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  return Math.floor((today.getTime() - target.getTime()) / 86400000);
-}
-
-function monthKey(value: Date) {
-  return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, "0")}`;
-}
-
-function monthLabel(key: string) {
-  const [year, month] = key.split("-");
-  return `${month}/${year.slice(-2)}`;
-}
-
-function addMonths(value: Date, amount: number) {
-  const next = new Date(value);
-  next.setDate(1);
-  next.setMonth(next.getMonth() + amount);
-  return next;
-}
-
-function locationState(value?: string | null) {
-  const text = value?.trim();
-  if (!text) return "Sem localização";
-  const match = text.match(/(?:-|\/)\s*([A-Za-z]{2})\s*$/);
-  return match ? match[1].toUpperCase() : "Sem UF";
-}
-
-function locationCity(value?: string | null) {
-  const text = value?.trim();
-  if (!text) return "";
-  const match = text.match(/^(.+?)(?:\s*[-/]\s*)[A-Za-z]{2}\s*$/);
-  return (match?.[1] ?? text).trim();
-}
-
-function percent(part: number, total: number) {
-  if (!total) return 0;
-  return Math.round((part / total) * 100);
-}
-
-function compareText(first?: string | null, second?: string | null) {
-  return (first ?? "").localeCompare(second ?? "", "pt-BR", { numeric: true, sensitivity: "base" });
-}
-
-function compareDate(first?: string | null, second?: string | null) {
-  return (first ?? "").localeCompare(second ?? "");
-}
-
-function normalizeStatus(value?: string | null) {
-  return value?.trim().normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase() ?? "";
-}
-
-function isCompletedTravel(item: TravelSchedule) {
-  return normalizeStatus(item.status) === "concluido";
-}
-
-function dayMonthOrderValue(value?: string | null, fallback = Number.MAX_SAFE_INTEGER) {
-  const normalized = value?.trim() ?? "";
-  const match = normalized.match(/^(\d{2})\/(\d{2})$/);
-  if (!match) return fallback;
-  return Number(match[2]) * 100 + Number(match[1]);
-}
-
-function compareTravelValue(first: TravelSchedule, second: TravelSchedule, key: TravelSortKey) {
-  if (key === "start_date" || key === "end_date") {
-    return dayMonthOrderValue(first[key]) - dayMonthOrderValue(second[key]);
-  }
-  if (key === "updated_at") {
-    return compareDate(first.updated_at || first.created_at, second.updated_at || second.created_at);
-  }
-  return compareText(String(first[key] ?? ""), String(second[key] ?? ""));
-}
-
-function compareTravelBySort(first: TravelSchedule, second: TravelSchedule, sort: { key: TravelSortKey; direction: SortDirection }) {
-  const result = compareTravelValue(first, second, sort.key);
-  return sort.direction === "asc" ? result : -result;
-}
-
-function nextDirection(isSameColumn: boolean, currentDirection: SortDirection) {
-  return isSameColumn && currentDirection === "asc" ? "desc" : "asc";
-}
-
-function sortMark(isActive: boolean, direction: SortDirection) {
-  if (!isActive) return "↕";
-  return direction === "asc" ? "↑" : "↓";
-}
-
-function isCorporateEmail(value: string) {
-  const normalized = value.trim().toLowerCase();
-  return ALLOWED_EMAIL_DOMAINS.some((domain) => normalized.endsWith(`@${domain}`));
-}
-
-function hasFreshAuthConfirmation() {
-  const confirmedAt = Number(window.localStorage.getItem(AUTH_CONFIRMED_AT_KEY) ?? 0);
-  return Boolean(confirmedAt) && Date.now() - confirmedAt < AUTH_CONFIRMATION_INTERVAL_MS;
-}
-
-function storeAuthConfirmation() {
-  window.localStorage.setItem(AUTH_CONFIRMED_AT_KEY, String(Date.now()));
-}
-
-function clearAuthConfirmation() {
-  window.localStorage.removeItem(AUTH_CONFIRMED_AT_KEY);
-}
-
-function bufferToBase64Url(buffer: ArrayBuffer) {
-  return btoa(String.fromCharCode(...new Uint8Array(buffer)))
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/, "");
-}
-
-function base64UrlToBuffer(value: string) {
-  const padded = value.replace(/-/g, "+").replace(/_/g, "/").padEnd(Math.ceil(value.length / 4) * 4, "=");
-  return Uint8Array.from(atob(padded), (character) => character.charCodeAt(0));
-}
-
-function canUseWebAuthn() {
-  return typeof window !== "undefined" && Boolean(window.PublicKeyCredential && navigator.credentials);
-}
-
-function isMobileAuthDevice() {
-  if (typeof window === "undefined") return false;
-  return window.matchMedia("(max-width: 760px), ((pointer: coarse) and (max-width: 1024px))").matches;
-}
-
-function hasBiometricEnabledFor(email: string) {
-  return Boolean(
-    email
-    && window.localStorage.getItem(BIOMETRIC_EMAIL_KEY) === email
-    && window.localStorage.getItem(BIOMETRIC_CREDENTIAL_KEY)
-    && canUseWebAuthn()
-  );
-}
-
-function hasBiometricVerifiedThisOpen(email: string) {
-  return window.sessionStorage.getItem(BIOMETRIC_SESSION_VERIFIED_KEY) === email;
-}
-
-function storeBiometricVerifiedThisOpen(email: string) {
-  window.sessionStorage.setItem(BIOMETRIC_SESSION_VERIFIED_KEY, email);
-}
-
-function clearBiometricVerifiedThisOpen() {
-  window.sessionStorage.removeItem(BIOMETRIC_SESSION_VERIFIED_KEY);
-}
-
-function hasFullAccess(role?: UserRole | null) {
-  return role === "Admin" || role === "Diretoria";
-}
-
-function canManageUsers(role?: UserRole | null) {
-  return hasFullAccess(role) || role === "Coordenador";
-}
-
-function canEditMachine(role?: UserRole | null) {
-  return hasFullAccess(role) || role === "Engenharia" || role === "Coordenador";
-}
-
-function canManageContracts(role?: UserRole | null) {
-  return hasFullAccess(role) || role === "Comercial";
-}
-
-function canEmitReports(role?: UserRole | null) {
-  return hasFullAccess(role)
-    || role === "Coordenador"
-    || role === "Engenharia"
-    || role === "Montagem"
-    || role === "Montagem Elétrica"
-    || role === "Montagem Mecânica";
-}
-
-function canEditSchedule(role?: UserRole | null) {
-  return hasFullAccess(role) || role === "Comercial";
-}
-
-function validateCodePattern(value: string, pattern: RegExp, label: string) {
-  const normalized = value.trim().toUpperCase();
-  if (!normalized) return "";
-  return pattern.test(normalized) ? "" : `${label} deve estar no padrão esperado ou ficar vazio.`;
-}
-
-function validateDayMonth(value: string, label: string) {
-  const normalized = value.trim();
-  if (!normalized || normalized.toLowerCase() === "a definir") return "";
-  const match = normalized.match(/^(\d{2})\/(\d{2})$/);
-  if (!match) return `${label} deve estar no formato dd/mm.`;
-  const day = Number(match[1]);
-  const month = Number(match[2]);
-  if (month < 1 || month > 12) return `${label} possui mês inválido.`;
-  const maxDay = new Date(2024, month, 0).getDate();
-  if (day < 1 || day > maxDay) return `${label} possui dia inválido para o mês informado.`;
-  return "";
-}
-
-function validateServiceDateTime(value: string, label: string) {
-  const normalized = value.trim();
-  if (!normalized) return "";
-  if (/^\d{2}\/\d{2}$/.test(normalized)) return validateDayMonth(normalized, label);
-  const match = normalized.match(/^(\d{2})\/(\d{2})\/(\d{2}|\d{4})(?:\s*-\s*(\d{2}):(\d{2}))?$/);
-  if (!match) return `${label} deve estar no formato dd/mm/aa ou dd/mm/aa - hh:mm.`;
-  const day = Number(match[1]);
-  const month = Number(match[2]);
-  const year = match[3].length === 2 ? Number(`20${match[3]}`) : Number(match[3]);
-  const hour = match[4] ? Number(match[4]) : null;
-  const minute = match[5] ? Number(match[5]) : null;
-  if (month < 1 || month > 12) return `${label} possui mês inválido.`;
-  if (year < 2000 || year > 2099) return `${label} possui ano inválido.`;
-  const maxDay = new Date(year, month, 0).getDate();
-  if (day < 1 || day > maxDay) return `${label} possui dia inválido para o mês informado.`;
-  if (hour !== null && (hour < 0 || hour > 23)) return `${label} possui hora inválida.`;
-  if (minute !== null && (minute < 0 || minute > 59)) return `${label} possui minuto inválido.`;
-  return "";
-}
-
-function validateFullDate(value: string, label: string) {
-  const normalized = value.trim();
-  if (!normalized) return "";
-  const match = normalized.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
-  if (!match) return `${label} deve estar no formato dd/mm/aaaa.`;
-  const day = Number(match[1]);
-  const month = Number(match[2]);
-  const year = Number(match[3]);
-  if (month < 1 || month > 12) return `${label} possui mês inválido.`;
-  if (year < 1900 || year > 2099) return `${label} possui ano inválido.`;
-  const maxDay = new Date(year, month, 0).getDate();
-  if (day < 1 || day > maxDay) return `${label} possui dia inválido para o mês informado.`;
-  return "";
-}
-
-function validateMonthYear(value: string, label: string) {
-  const normalized = value.trim();
-  if (!normalized) return "";
-  const match = normalized.match(/^(\d{2})\/(\d{4})$/);
-  if (!match) return `${label} deve estar no formato mm/aaaa.`;
-  const month = Number(match[1]);
-  if (month < 1 || month > 12) return `${label} possui mês inválido.`;
-  return "";
-}
-
-function isValidIpv4Octet(value: string) {
-  if (!/^\d{1,3}$/.test(value)) return false;
-  const number = Number(value);
-  return number >= 0 && number <= 255;
-}
-
-function validateIpv4Like(value: string, label: string, options: { allowWildcard?: boolean; allowPort?: boolean } = {}) {
-  const normalized = value.trim().toLowerCase();
-  if (!normalized) return "";
-  const [address, suffix] = normalized.split(/[/:]/);
-  const separatorMatch = normalized.match(/[/:]/);
-  if (suffix && (!options.allowPort || !/^\d{1,5}$/.test(suffix) || Number(suffix) < 1 || Number(suffix) > 65535)) {
-    return `${label} possui porta inválida.`;
-  }
-  if (!suffix && separatorMatch) return `${label} possui formato de IP inválido.`;
-  const octets = address.split(".");
-  if (octets.length !== 4) return `${label} deve estar no formato IPv4, como 189.1.87.xxx ou 189.1.87.200.`;
-  const valid = octets.every((octet, index) => {
-    if (options.allowWildcard && index >= 2 && (/^x{1,3}$/.test(octet) || octet === "*")) return true;
-    return isValidIpv4Octet(octet);
-  });
-  return valid ? "" : `${label} possui IPv4 inválido.`;
-}
-
-let leafletLoadPromise: Promise<LeafletNamespace> | null = null;
-
-function loadLeaflet() {
-  if (typeof window === "undefined") return Promise.reject(new Error("Mapa indisponível fora do navegador."));
-  const existingLeaflet = (window as unknown as { L?: LeafletNamespace }).L;
-  if (existingLeaflet) return Promise.resolve(existingLeaflet);
-
-  if (!leafletLoadPromise) {
-    leafletLoadPromise = import("leaflet").then((module) => {
-      const leaflet = (module.default ?? module) as unknown as LeafletNamespace;
-      (window as unknown as { L?: LeafletNamespace }).L = leaflet;
-      return leaflet;
-    });
-  }
-
-  return leafletLoadPromise;
-}
-
-function escapeHtml(value: string) {
-  return value.replace(/[&<>"']/g, (character) => ({
-    "&": "&amp;",
-    "<": "&lt;",
-    ">": "&gt;",
-    "\"": "&quot;",
-    "'": "&#039;"
-  }[character] ?? character));
-}
-
-async function geocodeCity(city: string, state: string) {
-  if (!city || !STATE_CENTERS[state]) return null;
-  const cacheKey = `tomasoni-map-city:${city.toLowerCase()}-${state.toLowerCase()}`;
-  const cached = window.localStorage.getItem(cacheKey);
-  if (cached) {
-    try {
-      const parsed = JSON.parse(cached) as [number, number];
-      if (Array.isArray(parsed) && parsed.length === 2) return parsed;
-    } catch {
-      window.localStorage.removeItem(cacheKey);
-    }
-  }
-
-  const response = await fetch(`https://nominatim.openstreetmap.org/search?format=json&limit=1&countrycodes=br&q=${encodeURIComponent(`${city}, ${state}, Brasil`)}`);
-  if (!response.ok) return null;
-  const result = await response.json() as Array<{ lat?: string; lon?: string }>;
-  const first = result[0];
-  if (!first?.lat || !first?.lon) return null;
-  const point: [number, number] = [Number(first.lat), Number(first.lon)];
-  if (Number.isNaN(point[0]) || Number.isNaN(point[1])) return null;
-  window.localStorage.setItem(cacheKey, JSON.stringify(point));
-  return point;
-}
-
-function describeAuthError(error: unknown) {
-  if (!error) return "erro não informado pelo Supabase.";
-  if (typeof error === "string") return error || "erro não informado pelo Supabase.";
-  if (error instanceof Error) {
-    return [error.name, error.message].filter(Boolean).join(": ") || "erro não informado pelo Supabase.";
-  }
-
-  try {
-    const entries = Object.entries(error as Record<string, unknown>)
-      .filter(([, value]) => value !== undefined && value !== null && value !== "")
-      .map(([key, value]) => `${key}: ${typeof value === "object" ? JSON.stringify(value) : String(value)}`);
-    return entries.length ? entries.join(" | ") : JSON.stringify(error);
-  } catch {
-    return String(error);
-  }
-}
-
-function authMessage(error: unknown) {
-  const detail = describeAuthError(error);
-  const normalized = detail.toLowerCase();
-  if (normalized.includes("invalid login credentials")) return "Código inválido ou expirado.";
-  if (normalized.includes("failed to fetch") || normalized.includes("network")) return "Falha de conexão. Verifique a internet e tente novamente.";
-  if (normalized.includes("email not confirmed")) return "Confirme seu e-mail antes de entrar.";
-  if (normalized.includes("user already registered")) return "Usuário já cadastrado.";
-  if (normalized.includes("signup is disabled")) return "O cadastro de novos usuários está desativado no Supabase.";
-  if (normalized.includes("rate limit") || normalized.includes("over_email_send_rate_limit") || normalized.includes("too many requests")) return "Limite temporário de envio de e-mails atingido. Aguarde alguns minutos e tente novamente.";
-  if (normalized.includes("smtp") || normalized.includes("email provider") || normalized.includes("send email")) return `Falha no envio do e-mail pelo provedor SMTP. Detalhe: ${detail}`;
-  if (normalized.includes("for security purposes")) return "Aguarde alguns segundos antes de solicitar um novo envio.";
-  if (normalized.includes("otp") || normalized.includes("token")) return "Código inválido ou expirado. Solicite um novo código e tente novamente.";
-  return `Não foi possível concluir a autenticação. Detalhe: ${detail}`;
-}
-
-function dataMessage(error: string) {
-  const normalized = error.toLowerCase();
-  if (normalized.includes("status") && normalized.includes("schema cache")) return "A coluna de status dos contratos ainda não foi reconhecida pela API do Supabase. Aplique a migration 022_refresh_support_contract_status_schema.sql e tente novamente.";
-  if (normalized.includes("support_contracts") || normalized.includes("relation") || normalized.includes("schema cache")) return "Estrutura de contratos não encontrada no Supabase. Aplique as migrations 020_support_contracts_permissions.sql, 021_add_support_contract_status.sql e 022_refresh_support_contract_status_schema.sql e tente novamente.";
-  if (normalized.includes("support_contracts_status_check")) return "Status de contrato inválido no banco. Aplique a migration 022_refresh_support_contract_status_schema.sql e tente novamente.";
-  if (normalized.includes("duplicate") || normalized.includes("unique")) return "Já existe um cadastro com estes dados.";
-  if (normalized.includes("permission") || normalized.includes("row-level security")) return "Seu usuário não tem permissão para executar esta ação.";
-  if (normalized.includes("network") || normalized.includes("fetch")) return "Falha de conexão. Verifique a internet e tente novamente.";
-  return "Não foi possível concluir a operação. Revise os dados e tente novamente.";
-}
-
-function screenLegend(view: View, registryTab: RegistryTab, selectedMachine?: Machine) {
-  if (view === "home") return "Consulte uma máquina pelo código ou selecione uma linha da tabela.";
-  if (view === "overview") return "Visão geral da base instalada, contratos, acessos e atendimentos registrados.";
-  if (view === "admin") return "Monitore atualizações, deploys, migrations e ações registradas no sistema.";
-  if (view === "chat") return "Acesso Remoto: receba, assuma, transfira e encerre conversas.";
-  if (view === "machineDetail") return selectedMachine ? `Dados cadastrais e histórico da máquina ${displayMachineCode(selectedMachine)}.` : "Dados cadastrais e histórico da máquina.";
-  if (view === "service") return "Registre um novo atendimento técnico e gere o relatório em PDF.";
-  if (view === "schedule") return "Acompanhe o cronograma de viagens e atendimentos planejados.";
-  if (registryTab === "machines") return "Cadastre, altere ou exclua máquinas e informações de acesso.";
-  if (registryTab === "clients") return "Consulte e ajuste clientes identificados pelo Acesso Remoto.";
-  return "Cadastre e gerencie os usuários autorizados a acessar o sistema.";
-}
-
-function helpText(view: View, registryTab: RegistryTab) {
-  if (view === "home") return "Use o filtro para localizar uma máquina por código, modelo, cliente ou localização. Clique no código da máquina para abrir os dados cadastrais e o histórico de atendimentos.";
-  if (view === "overview") return "A visão geral consolida indicadores da base cadastrada, contratos, acesso remoto, localização e volume de atendimentos. Use os rankings para localizar máquinas, clientes e regiões que merecem atenção.";
-  if (view === "admin") return "A tela administrativa concentra informações técnicas do app e a trilha de auditoria das operações feitas pelos usuários. O acesso fica restrito aos perfis Admin e Diretoria.";
-  if (view === "chat") return "Use a tela de Acesso Remoto para validar atendimentos recebidos pelo WhatsApp. Conversas podem ser assumidas por usuários Online, transferidas e encerradas com histórico salvo.";
-  if (view === "machineDetail") return "Nesta tela ficam os dados técnicos da máquina, informações de acesso remoto e histórico. Clique em um atendimento para ver o registro completo ou use o menu de ações para baixar o PDF.";
-  if (view === "service") return "Registre o atendimento com tipo, motivo breve e descrições completas. Em visita técnica, colete a assinatura do cliente para incluir no PDF.";
-  if (view === "schedule") return "Use o cronograma para planejar viagens, técnicos envolvidos, cliente, código, status e motivo. Datas podem ser dd/mm ou A definir.";
-  if (registryTab === "machines") return "Cadastre ou altere máquinas e informações de acesso. Use o menu de ações da tabela para editar ou excluir cadastros.";
-  if (registryTab === "clients") return "Use esta lista para corrigir nome, empresa e telefone dos contatos que abriram chamados pelo Acesso Remoto.";
-  return "Cadastre usuários autorizados. O perfil define permissões de cadastro, cronograma, contratos, histórico e relatórios.";
-}
-
-function helpSections(view: View, registryTab: RegistryTab) {
-  if (view === "overview") {
-    return [
-      ["KPIs superiores", "Resumo rápido da base: máquinas cadastradas, atendimentos do mês, contratos, cobertura remota e máquinas que pedem atenção."],
-      ["Tendência de atendimentos", "Mostra o volume mensal dos últimos meses para perceber aumento ou queda na demanda."],
-      ["Acesso remoto", "Distribui a base entre SINEMA, VNC e máquinas sem acesso remoto cadastrado."],
-      ["Contratos", "Resume contratos ativos, vencidos e a vencer, separando também o tipo de contrato quando informado."],
-      ["Modelos", "Mostra quais modelos concentram mais máquinas cadastradas."],
-      ["Softwares por VM", "Conta códigos de software únicos por VM. Se duas máquinas usam o mesmo código de software, ele entra uma única vez naquela VM."],
-      ["Geolocalização", "No zoom inicial o mapa agrupa por estado. Ao aproximar, o mapa tenta posicionar as máquinas pela cidade cadastrada."],
-      ["Clientes", "Clientes com mais máquinas indica base instalada. Clientes mais atendidos indica volume de chamados registrados."],
-      ["Rankings inferiores", "Ajudam a localizar máquinas com mais atendimentos, máquinas há muito tempo sem registro e os últimos atendimentos lançados."]
-    ];
-  }
-
-  if (view === "registry" && registryTab === "machines") {
-    return [
-      ["Código", "Número do projeto da máquina ou referência principal usada pela equipe."],
-      ["Modelo e descrição", "Informe o tipo da máquina no modelo e detalhe a configuração no campo descrição."],
-      ["Cliente e localização", "Informe a empresa e a cidade com UF, preferencialmente no formato Cidade - UF."],
-      ["Mecânica", "Lista mecânica ou referência do projeto mecânico."],
-      ["Código do software", "Número do software da máquina. Ele é usado nos indicadores por VM."],
-      ["VM", "Nome ou identificação da VM onde o software está alocado."],
-      ["Faixa de IP", "Faixa reservada pela engenharia no padrão IPv4, como 189.1.87.xxx."],
-      ["Fabricação", "Mês e ano no formato mm/aaaa."],
-      ["Software", "Selecione a versão padronizada de TIA Portal ou Scout."],
-      ["Acesso remoto", "Escolha SINEMA, VNC ou sem acesso remoto. Os campos adicionais aparecem conforme a opção."],
-      ["Contrato", "Preencha somente quando houver contrato ativo ou informação de vigência relevante."]
-    ];
-  }
-
-  if (view === "service") {
-    return [
-      ["Máquina e equipamento", "Selecione a máquina atendida e indique o equipamento ou área afetada."],
-      ["Tipo de atendimento", "Use acesso remoto para suporte remoto e visita técnica quando houver atendimento presencial."],
-      ["E-mails para envio", "Informe os e-mails dos clientes. Comercial, Célia, Raquel e o técnico responsável entram automaticamente no envio."],
-      ["Motivo breve", "Resumo curto que aparece nas tabelas, por exemplo: Falha no acionamento X."],
-      ["Campos descritivos", "Registre solicitação, diagnóstico, serviço realizado e observações com o máximo de clareza."],
-      ["Assinatura", "Em visita técnica, o campo de assinatura entra no relatório em PDF."]
-    ];
-  }
-
-  if (view === "machineDetail") {
-    return [
-      ["Card principal", "Mostra os dados cadastrais mais importantes da máquina."],
-      ["Software", "Concentra software, código do software, VM, faixa de IP e último atendimento."],
-      ["Acesso remoto", "Mostra informações de SINEMA ou VNC cadastradas para consulta rápida."],
-      ["Histórico", "Clique em um atendimento para abrir o popup com o registro completo e baixar o PDF."],
-      ["Ações rápidas", "Permite registrar novo atendimento, alterar cadastro ou baixar o último PDF."]
-    ];
-  }
-
-  if (view === "home") {
-    return [
-      ["Filtro", "Use para buscar por código, modelo, cliente, localização, VM, software ou acesso remoto."],
-      ["Tabela", "Clique no código da máquina para abrir seus dados cadastrais e histórico."],
-      ["Ordenação", "Clique nos cabeçalhos para ordenar a lista conforme a coluna escolhida."]
-    ];
-  }
-
-  if (view === "schedule") {
-    return [
-      ["Datas", "Informe início e fim no formato dd/mm ou escreva A definir quando a agenda ainda não estiver fechada."],
-      ["Código e cliente", "Use o código da máquina ou projeto quando existir e selecione/digite o cliente atendido."],
-      ["Técnicos", "Liste os técnicos envolvidos. O campo aceita mais de um nome e aparece completo na tabela."],
-      ["Status", "Atualize o andamento da viagem para facilitar o acompanhamento operacional."],
-      ["Motivo", "Descreva o objetivo da viagem ou atendimento planejado com o nível de detalhe necessário."]
-    ];
-  }
-
-  if (view === "admin") {
-    return [
-      ["Deploy", "Mostra ambiente, URL, commit, autor e data da leitura informados pela Vercel."],
-      ["Migrations", "Lista as migrations mais recentes versionadas no repositório para facilitar conferência com o Supabase."],
-      ["Auditoria", "Mostra as últimas ações gravadas no sistema: criação, edição, exclusão, relatórios, contratos, cronograma e Acesso Remoto."],
-      ["Permissões", "Esta tela é restrita aos perfis Admin e Diretoria."]
-    ];
-  }
-
-  if (view === "chat") {
-    return [
-      ["Fila de conversas", "Lista mensagens recebidas pelo WhatsApp. Conversas abertas ainda não foram assumidas; atribuídas têm um técnico responsável; encerradas ficam no histórico."],
-      ["Status do usuário", "O status fica no cartão inferior do perfil: Online recebe transferências, Ocupado responde apenas conversas já atribuídas e Offline apenas visualiza."],
-      ["Assumir e transferir", "Um usuário Online pode assumir conversa sem responsável. Para transferir, escolha um usuário Online na janela de transferência."],
-      ["Responder", "As respostas são gravadas no histórico. Quando as credenciais oficiais da Meta estiverem configuradas, também serão enviadas ao WhatsApp."],
-      ["Encerrar", "Use ao finalizar o chamado para arquivar a conversa e manter o histórico consultável."]
-    ];
-  }
-
-  if (view === "registry" && registryTab === "clients") {
-    return [
-      ["Origem dos clientes", "A lista é formada automaticamente pelos contatos que enviam mensagens ao WhatsApp do Acesso Remoto."],
-      ["Edição manual", "Use quando o cliente responder de forma incompleta ou confusa às mensagens automáticas."],
-      ["Máquinas", "Código de máquina e número de série continuam ligados ao chamado, não ao cadastro fixo do cliente."],
-      ["Exclusão", "Remove o cadastro do cliente, mas não apaga as conversas já registradas no histórico."]
-    ];
-  }
-
-  return [
-    ["Usuário", "Cadastre o nome que será exibido no sistema e associado aos registros feitos por essa conta."],
-    ["E-mail", "Informe o e-mail corporativo autorizado. Apenas e-mails cadastrados conseguem validar o acesso ao app."],
-    ["Perfil / setor", "Escolha o perfil correto para liberar apenas as telas e ações compatíveis com o setor do usuário."],
-    ["Acesso Remoto", "Marque esta permissão para liberar a tela de Acesso Remoto e o status de plantão no perfil inferior."],
-    ["Permissões", "Admin e Diretoria têm acesso total, incluindo Cronograma e Contratos. Coordenador segue as permissões de Engenharia e também pode cadastrar usuários. Montagem Elétrica e Montagem Mecânica podem emitir relatórios. Controladoria fica em consulta, sem edição ou emissão. Comercial pode criar, editar e excluir contratos e viagens; nos demais módulos permanece em consulta, sem emissão de relatórios."],
-    ["Ações", "Use o menu de ações da tabela para editar dados do usuário ou remover acessos que não devem mais entrar no sistema."]
-  ];
-}
-
-function displayUserName(value: string) {
-  const localPart = value.trim().split("@")[0];
-  return localPart ? localPart.replace(/\./g, " ") : "Usuário";
-}
-
-function initialsFromEmail(value: string) {
-  const parts = displayUserName(value).split(/\s+/).filter(Boolean);
-  if (!parts.length) return "US";
-  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
-  return `${parts[0][0]}${parts.at(-1)?.[0] ?? ""}`.toUpperCase();
-}
-
-function auditActionLabel(action: string) {
-  const labels: Record<string, string> = {
-    "machine.created": "Máquina cadastrada",
-    "machine.updated": "Máquina alterada",
-    "authorized_users.deleted": "Usuário excluído",
-    "user.created": "Usuário cadastrado",
-    "user.updated": "Usuário alterado",
-    "profile.updated": "Perfil alterado",
-    "chat_contact.updated": "Cliente do acesso remoto alterado",
-    "chat_contacts.deleted": "Cliente do acesso remoto excluído",
-    "travel.created": "Viagem cadastrada",
-    "travel.updated": "Viagem alterada",
-    "travel_schedules.deleted": "Viagem excluída",
-    "contract.created": "Contrato cadastrado",
-    "contract.updated": "Contrato alterado",
-    "support_contracts.deleted": "Contrato excluído",
-    "service.created": "Atendimento registrado",
-    "service.updated": "Atendimento alterado",
-    "service_records.deleted": "Atendimento excluído",
-    "machines.deleted": "Máquina excluída",
-    "chat.assigned": "Conversa atribuída",
-    "chat.closed": "Conversa encerrada"
-  };
-  return labels[action] ?? action;
-}
-
-function auditEntityLabel(entity?: string | null) {
-  const labels: Record<string, string> = {
-    machines: "Máquinas",
-    authorized_users: "Usuários",
-    chat_contacts: "Clientes",
-    travel_schedules: "Cronograma",
-    support_contracts: "Contratos",
-    service_records: "Relatórios",
-    chat_conversations: "Acesso Remoto"
-  };
-  return entity ? labels[entity] ?? entity : "-";
-}
-
-function auditDetailsSummary(log: AppAuditLog) {
-  const details = log.details ?? {};
-  const keys = ["code", "client", "model", "status", "service_type", "issue_summary", "contract_type", "assigned_to_name", "email"];
-  const summary = keys
-    .map((key) => {
-      const value = details[key];
-      return typeof value === "string" && value.trim() ? value.trim() : "";
-    })
-    .filter(Boolean)
-    .slice(0, 3)
-    .join(" · ");
-  return summary || log.entity_label || "-";
-}
-
-function formatLongDateTime(value?: string | null) {
-  if (!value) return "-";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString("pt-BR", {
-    day: "2-digit",
-    month: "2-digit",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit"
-  });
-}
-
-function shortCommit(value?: string | null) {
-  return value ? value.slice(0, 7) : "-";
-}
-
-function formatDateTime(value?: string | null) {
-  if (!value) return "-";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
-}
-
-function chatStatusLabel(status: ChatConversation["status"]) {
-  if (status === "closed") return "Encerrada";
-  if (status === "assigned") return "Em atendimento";
-  return "Aberta";
-}
-
-function chatMediaLabel(message: ChatMessage) {
-  if (message.message_type === "image") return "Abrir imagem";
-  if (message.message_type === "video") return "Abrir vídeo";
-  if (message.message_type === "audio") return "Abrir áudio";
-  if (message.message_type === "document") return message.media_filename ? `Abrir ${message.media_filename}` : "Abrir documento";
-  return "Abrir mídia";
-}
-
-function remoteAccessStatusClass(status: RemoteAccessStatus) {
-  if (status === "Online") return "online";
-  if (status === "Ocupado") return "busy";
-  return "offline";
-}
-
-function PlusIcon() {
-  return (
-    <svg aria-hidden="true" viewBox="0 0 24 24">
-      <path d="M12 5v14M5 12h14" />
-    </svg>
-  );
-}
-
-function SaveIcon() {
-  return (
-    <svg aria-hidden="true" viewBox="0 0 24 24">
-      <path d="M7 3h7l4 4v14H7z" />
-      <path d="M14 3v5h4" />
-      <path d="m9 14 2 2 4-5" />
-    </svg>
-  );
-}
-
-function PdfDownloadIcon() {
-  return (
-    <svg aria-hidden="true" viewBox="0 0 24 24">
-      <path d="M7 3h7l4 4v14H7z" />
-      <path d="M14 3v5h4" />
-      <path d="M12 10v6" />
-      <path d="M9.5 13.5 12 16l2.5-2.5" />
-      <path d="M9 19h6" />
-    </svg>
-  );
-}
-
-function MoreIcon() {
-  return (
-    <svg aria-hidden="true" viewBox="0 0 24 24">
-      <circle cx="5" cy="12" r="1.5" fill="currentColor" />
-      <circle cx="12" cy="12" r="1.5" fill="currentColor" />
-      <circle cx="19" cy="12" r="1.5" fill="currentColor" />
-    </svg>
-  );
-}
-
-function TrashIcon() {
-  return (
-    <svg aria-hidden="true" viewBox="0 0 24 24">
-      <path d="M4 7h16" />
-      <path d="M10 11v6M14 11v6" />
-      <path d="M6 7l1 14h10l1-14" />
-      <path d="M9 7V4h6v3" />
-    </svg>
-  );
-}
-
-function EditIcon() {
-  return (
-    <svg aria-hidden="true" viewBox="0 0 24 24">
-      <path d="M12 20h9" />
-      <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4z" />
-    </svg>
-  );
-}
-
-function HelpIcon() {
-  return (
-    <svg aria-hidden="true" viewBox="0 0 24 24">
-      <circle cx="12" cy="12" r="9" />
-      <path d="M9.5 9a2.6 2.6 0 0 1 5 1.2c0 1.8-2.5 2.1-2.5 4" />
-      <path d="M12 18h.01" />
-    </svg>
-  );
-}
-
-function SunIcon() {
-  return (
-    <svg aria-hidden="true" viewBox="0 0 24 24">
-      <circle cx="12" cy="12" r="4" />
-      <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" />
-    </svg>
-  );
-}
-
-function MoonIcon() {
-  return (
-    <svg aria-hidden="true" viewBox="0 0 24 24">
-      <path d="M20 15.5A8.3 8.3 0 0 1 8.5 4 8.7 8.7 0 1 0 20 15.5z" />
-    </svg>
-  );
-}
-
-function LogOutIcon() {
-  return (
-    <svg aria-hidden="true" viewBox="0 0 24 24">
-      <path d="M10 17l5-5-5-5" />
-      <path d="M15 12H3" />
-      <path d="M21 3v18" />
-    </svg>
-  );
-}
-
-function DetailIcon({ type }: { type: "client" | "location" | "serial" | "calendar" | "mechanical" | "software" | "remote" | "info" | "history" | "check" | "alert" | "mail" | "detail" }) {
-  return (
-    <svg aria-hidden="true" viewBox="0 0 24 24">
-      {type === "client" && <><path d="M20 21a8 8 0 0 0-16 0" /><circle cx="12" cy="7" r="4" /></>}
-      {type === "location" && <><path d="M12 21s7-4.5 7-11a7 7 0 1 0-14 0c0 6.5 7 11 7 11Z" /><circle cx="12" cy="10" r="2.4" /></>}
-      {type === "serial" && <><path d="M20 10 14 4 4 14l6 6 10-10Z" /><path d="m7.5 13.5 3 3" /></>}
-      {type === "calendar" && <><rect x="4" y="5" width="16" height="15" rx="2" /><path d="M8 3v4M16 3v4M4 10h16" /></>}
-      {type === "mechanical" && <><circle cx="12" cy="12" r="3" /><path d="M12 2v3M12 19v3M4.9 4.9 7 7M17 17l2.1 2.1M2 12h3M19 12h3M4.9 19.1 7 17M17 7l2.1-2.1" /></>}
-      {type === "software" && <><rect x="4" y="5" width="16" height="12" rx="2" /><path d="M8 21h8M12 17v4" /></>}
-      {type === "remote" && <><path d="M5 13a10 10 0 0 1 14 0" /><path d="M8.5 16.5a5 5 0 0 1 7 0" /><path d="M12 20h.01" /></>}
-      {type === "info" && <><circle cx="12" cy="12" r="9" /><path d="M12 10v6M12 7h.01" /></>}
-      {type === "history" && <><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></>}
-      {type === "check" && <><circle cx="12" cy="12" r="9" /><path d="m8 12 2.6 2.6L16.5 9" /></>}
-      {type === "alert" && <><circle cx="12" cy="12" r="9" /><path d="M8 8l8 8M16 8l-8 8" /></>}
-      {type === "mail" && <><rect x="3" y="5" width="18" height="14" rx="2" /><path d="m3 7 9 6 9-6" /></>}
-      {type === "detail" && <><rect x="4" y="5" width="16" height="14" rx="2" /><path d="M8 9h8M8 13h8M8 17h5" /></>}
-    </svg>
-  );
-}
+import {
+  ActionMenuPosition,
+  addDays,
+  addMonths,
+  apiRequest,
+  appAction,
+  AppDataPayload,
+  AppSessionPayload,
+  auditActionLabel,
+  auditDetailsSummary,
+  auditEntityLabel,
+  AUTH_CONFIRMATION_INTERVAL_MS,
+  AUTH_CONFIRMED_AT_KEY,
+  authMessage,
+  AuthorizedUserFormState,
+  base64UrlToBuffer,
+  BIOMETRIC_CREDENTIAL_KEY,
+  BIOMETRIC_EMAIL_KEY,
+  BIOMETRIC_PROMPT_DISMISSED_KEY,
+  BIOMETRIC_SESSION_VERIFIED_KEY,
+  bufferToBase64Url,
+  canUseWebAuthn,
+  ChatContactFormState,
+  chatMediaLabel,
+  chatStatusLabel,
+  clearAuthConfirmation,
+  clearBiometricVerifiedThisOpen,
+  clientServiceRecipients,
+  compareDate,
+  compareText,
+  compareTravelBySort,
+  compareTravelValue,
+  CONTRACT_STATUS_OPTIONS,
+  CONTRACT_TYPE_OPTIONS,
+  contractMatchesMachine,
+  contractStatus,
+  ContractStatus,
+  ContractType,
+  dataMessage,
+  dayMonthOrderValue,
+  daysSince,
+  daysUntil,
+  DEFAULT_MESSAGE,
+  describeAuthError,
+  displayMachineCode,
+  displayUserName,
+  EMPTY_CHAT_CONTACT_FORM,
+  EMPTY_CONTRACT_FORM,
+  EMPTY_MACHINE_CREDENTIALS,
+  EMPTY_MACHINE_FORM,
+  EMPTY_TRAVEL_FORM,
+  EMPTY_USER_FORM,
+  escapeHtml,
+  extractDateFromServiceDateTime,
+  finalizedServiceRecords,
+  findMachineByLookup,
+  formatDate,
+  formatDateTime,
+  formatDayMonthInput,
+  formatFullDateInput,
+  formatLongDateTime,
+  formatMachineProjectCodeInput,
+  formatMonthYear,
+  formatMonthYearInput,
+  formatPhone,
+  formatServiceDateTimeInput,
+  formatServiceTechniciansInput,
+  formatTravelClientCodeInput,
+  GENERIC_AUTH_MESSAGE,
+  geocodeCity,
+  hasBiometricEnabledFor,
+  hasBiometricVerifiedThisOpen,
+  hasFreshAuthConfirmation,
+  helpSections,
+  helpText,
+  HistorySortKey,
+  initialsFromEmail,
+  INTERNAL_SERVICE_REPORT_RECIPIENTS,
+  isActiveContract,
+  isAssemblyRole,
+  isCompletedTravel,
+  isMobileAuthDevice,
+  isNegotiatingContract,
+  isServiceDraft,
+  isValidIpv4Octet,
+  lastServiceDate,
+  latestContractForMachine,
+  LeafletLayerGroup,
+  LeafletLayerTarget,
+  LeafletMap,
+  LeafletMarker,
+  LeafletNamespace,
+  LeafletTileLayer,
+  loadLeaflet,
+  locationCity,
+  locationState,
+  MACHINE_SAFE_SELECT,
+  machineFormFromMachine,
+  MachineFormState,
+  machineHasRemoteAccess,
+  MachineSortKey,
+  mapPointPosition,
+  MAX_SERVICE_ATTACHMENTS,
+  monthKey,
+  monthLabel,
+  monthYearSortValue,
+  nextDirection,
+  normalizeFullDate,
+  normalizeLookup,
+  normalizeLookupText,
+  normalizeMonthYear,
+  normalizeRemoteAccess,
+  normalizeServiceType,
+  normalizeStatus,
+  OnlineTechnician,
+  onlyDigits,
+  parseEmails,
+  parseServiceTechnicianInput,
+  percent,
+  PWA_SW_RELOAD_KEY,
+  RegistryMachineSortKey,
+  RegistryTab,
+  REMOTE_ACCESS_OPTIONS,
+  REMOTE_ACCESS_STATUS_KEY,
+  RemoteAccess,
+  RemoteAccessStatus,
+  remoteAccessStatusClass,
+  ScheduleTab,
+  screenLegend,
+  secretRotationMessage,
+  secretRotationStatus,
+  SERVICE_EMAIL_SUGGESTIONS_KEY,
+  SERVICE_TYPE_OPTIONS,
+  serviceEmailMessage,
+  serviceEmailSubject,
+  serviceEmailSubjectDate,
+  serviceEmailTechnicians,
+  serviceMachineLookupLabel,
+  ServicePreviewState,
+  serviceRecordWithTechnicianRole,
+  serviceReportRecipients,
+  serviceReportStatus,
+  serviceTechnicianLookupLabel,
+  ServiceType,
+  shortCommit,
+  SOFTWARE_OPTIONS,
+  sortContractsByRelevance,
+  SortDirection,
+  sortMark,
+  STATE_CENTERS,
+  storeAuthConfirmation,
+  storeBiometricVerifiedThisOpen,
+  SupportContractFormState,
+  THEME_KEY,
+  ThemeMode,
+  TRAVEL_CODE_PATTERN,
+  TRAVEL_STATUS_OPTIONS,
+  TravelScheduleFormState,
+  TravelSortKey,
+  uniqueValidEmails,
+  USER_ROLE_OPTIONS,
+  UserSortKey,
+  validateCodePattern,
+  validateDayMonth,
+  validateFullDate,
+  validateIpv4Like,
+  validateMonthYear,
+  validateServiceDateTime,
+  View,
+  VM_OPTIONS
+} from "@/lib/app-helpers";
+import {
+  DetailIcon,
+  EditIcon,
+  HelpIcon,
+  LogOutIcon,
+  MoonIcon,
+  MoreIcon,
+  NAV_ICON_PATHS,
+  NavIcon,
+  NavIconName,
+  PdfDownloadIcon,
+  PlusIcon,
+  SaveIcon,
+  SunIcon,
+  TrashIcon
+} from "@/components/icons";
 
 export default function Home() {
   const signatureCanvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -1508,6 +273,8 @@ export default function Home() {
   const [theme, setTheme] = useState<ThemeMode>("light");
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
+  const [confirmDialog, setConfirmDialog] = useState<{ title: string; message: string; confirmLabel: string; destructive: boolean } | null>(null);
+  const confirmResolver = useRef<((accepted: boolean) => void) | null>(null);
   const [openActionMenu, setOpenActionMenu] = useState("");
   const [actionMenuPosition, setActionMenuPosition] = useState<ActionMenuPosition | null>(null);
 
@@ -2337,13 +1104,41 @@ export default function Home() {
     }
   }
 
+  function askConfirm(message: string, options: { title?: string; confirmLabel?: string; destructive?: boolean } = {}) {
+    return new Promise<boolean>((resolve) => {
+      confirmResolver.current?.(false);
+      confirmResolver.current = resolve;
+      setConfirmDialog({
+        title: options.title ?? "Confirmar ação",
+        message,
+        confirmLabel: options.confirmLabel ?? "Confirmar",
+        destructive: options.destructive ?? false
+      });
+    });
+  }
+
+  function answerConfirm(accepted: boolean) {
+    confirmResolver.current?.(accepted);
+    confirmResolver.current = null;
+    setConfirmDialog(null);
+  }
+
+  useEffect(() => {
+    if (!confirmDialog) return;
+    function closeOnEscape(event: KeyboardEvent) {
+      if (event.key === "Escape") answerConfirm(false);
+    }
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [confirmDialog]);
+
   async function resetClientSecretRotation() {
     if (!currentUserCanViewAdmin) {
       setMessage("Seu usuário não tem permissão para atualizar alertas administrativos.");
       return;
     }
 
-    const confirmed = window.confirm("Confirma que o CLIENT_SECRET foi rotacionado no Azure/Vercel e deseja reiniciar a contagem de 180 dias?");
+    const confirmed = await askConfirm("Confirma que o CLIENT_SECRET foi rotacionado no Azure/Vercel e deseja reiniciar a contagem de 180 dias?", { title: "Reiniciar contagem", confirmLabel: "Reiniciar" });
     if (!confirmed) return;
 
     setMessage("Atualizando controle de rotação do CLIENT_SECRET.");
@@ -3096,7 +1891,7 @@ export default function Home() {
       setMessage("Seu usuario nao tem permissao para excluir contratos.");
       return;
     }
-    if (!confirm("Excluir este contrato?")) return;
+    if (!(await askConfirm("Excluir este contrato?", { title: "Excluir contrato", confirmLabel: "Excluir", destructive: true }))) return;
     try {
       await appAction("delete", { table: "support_contracts", id });
       setMessage("Contrato excluido.");
@@ -3365,13 +2160,32 @@ export default function Home() {
     }
   }
 
-  function startServiceEdit(record: ServiceRecord, preservedRecipients: string[] | null = null) {
+  async function openServiceRecord(record: ServiceRecord) {
+    setSelectedServiceRecord(record);
+    if (!needsHeavyFields(record)) return;
+    try {
+      const fullRecord = await hydrateServiceRecord(record);
+      setSelectedServiceRecord((current) => current?.id === record.id ? fullRecord : current);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Não foi possível carregar os anexos do atendimento.");
+    }
+  }
+
+  async function startServiceEdit(sourceRecord: ServiceRecord, preservedRecipients: string[] | null = null) {
     if (!currentUserCanEmitReports) {
       setMessage("Seu perfil nao tem permissao para alterar relatorios.");
       return;
     }
-    if (record.created_by !== currentUserId) {
+    if (sourceRecord.created_by !== currentUserId) {
       setMessage("Este atendimento so pode ser alterado pelo usuario que lancou o registro.");
+      return;
+    }
+
+    let record = sourceRecord;
+    try {
+      record = await hydrateServiceRecord(sourceRecord);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Não foi possível carregar os anexos do atendimento.");
       return;
     }
 
@@ -3421,7 +2235,7 @@ export default function Home() {
   }
 
   async function deleteMachine(id: string) {
-    if (!confirm("Excluir esta maquina e todo o historico?")) return;
+    if (!(await askConfirm("Excluir esta máquina e todo o histórico de atendimentos?", { title: "Excluir máquina", confirmLabel: "Excluir", destructive: true }))) return;
     await deleteByAction("machines", id, "Máquina excluída.");
   }
 
@@ -3430,7 +2244,7 @@ export default function Home() {
       setMessage("Seu usuario nao tem permissao para excluir usuarios.");
       return;
     }
-    if (!confirm("Excluir este tecnico?")) return;
+    if (!(await askConfirm("Excluir este técnico?", { title: "Excluir técnico", confirmLabel: "Excluir", destructive: true }))) return;
     await deleteByAction("authorized_users", id, "Tecnico excluido.");
   }
 
@@ -3448,7 +2262,7 @@ export default function Home() {
       setMessage("Seu usuario tem acesso apenas para visualizar o cronograma.");
       return;
     }
-    if (!confirm("Excluir este item do cronograma?")) return;
+    if (!(await askConfirm("Excluir este item do cronograma?", { title: "Excluir item", confirmLabel: "Excluir", destructive: true }))) return;
     await deleteByAction("travel_schedules", id, "Item do cronograma excluido.");
   }
 
@@ -3458,7 +2272,7 @@ export default function Home() {
       return;
     }
     const deletingDraft = isServiceDraft(record);
-    if (!confirm(deletingDraft ? "Excluir esta prévia não finalizada?" : "Excluir este atendimento?")) return;
+    if (!(await askConfirm(deletingDraft ? "Excluir esta prévia não finalizada?" : "Excluir este atendimento?", { title: deletingDraft ? "Excluir prévia" : "Excluir atendimento", confirmLabel: "Excluir", destructive: true }))) return;
     const machine = machines.find((item) => item.id === record.machine_id) ?? selectedMachine;
     const filename = machine ? servicePdfFileName(machine, record) : "";
     try {
@@ -3615,12 +2429,12 @@ export default function Home() {
       <aside className="sidebar">
         <div className="brand"><Image src="/tomasoni-logo-clean.png?v=20260827-transparent" alt="Tomasoni" width={220} height={59} priority /></div>
         <nav className="side-nav">
-          <button className={`nav-item ${view === "home" ? "active" : ""}`} onClick={() => setView("home")}>Tela inicial</button>
-          <button className={`nav-item ${view === "overview" ? "active" : ""}`} onClick={() => setView("overview")}>Visão geral</button>
-          {currentUserCanUseRemoteAccess && <button className={`nav-item ${view === "chat" ? "active" : ""}`} onClick={() => setView("chat")}>Acesso Remoto</button>}
-          <button className={`nav-item ${view === "schedule" ? "active" : ""}`} onClick={() => setView("schedule")}>Cronograma</button>
-          {(currentUserCanEditMachine || currentUserCanManageUsers || currentUserCanUseRemoteAccess) && <button className={`nav-item ${view === "registry" ? "active" : ""}`} onClick={() => { setRegistryTab(currentUserCanEditMachine ? "machines" : currentUserCanUseRemoteAccess ? "clients" : "users"); setView("registry"); }}>Cadastro</button>}
-          {currentUserCanViewAdmin && <button className={`nav-item ${view === "admin" ? "active" : ""}`} onClick={() => setView("admin")}>Administração</button>}
+          <button className={`nav-item ${view === "home" ? "active" : ""}`} onClick={() => setView("home")}><NavIcon name="home" /><span>Tela inicial</span></button>
+          <button className={`nav-item ${view === "overview" ? "active" : ""}`} onClick={() => setView("overview")}><NavIcon name="overview" /><span>Visão geral</span></button>
+          {currentUserCanUseRemoteAccess && <button className={`nav-item ${view === "chat" ? "active" : ""}`} onClick={() => setView("chat")}><NavIcon name="remote" /><span>Acesso Remoto</span></button>}
+          <button className={`nav-item ${view === "schedule" ? "active" : ""}`} onClick={() => setView("schedule")}><NavIcon name="schedule" /><span>Cronograma</span></button>
+          {(currentUserCanEditMachine || currentUserCanManageUsers || currentUserCanUseRemoteAccess) && <button className={`nav-item ${view === "registry" ? "active" : ""}`} onClick={() => { setRegistryTab(currentUserCanEditMachine ? "machines" : currentUserCanUseRemoteAccess ? "clients" : "users"); setView("registry"); }}><NavIcon name="registry" /><span>Cadastro</span></button>}
+          {currentUserCanViewAdmin && <button className={`nav-item ${view === "admin" ? "active" : ""}`} onClick={() => setView("admin")}><NavIcon name="admin" /><span>Administração</span></button>}
         </nav>
         <div className="user-menu">
           <button className="user-menu-trigger" type="button" onClick={() => setUserMenuOpen((open) => !open)} aria-expanded={userMenuOpen}>
@@ -3968,7 +2782,7 @@ export default function Home() {
                 <div className="card-title"><DetailIcon type="detail" /><h3>Últimos atendimentos</h3></div>
                 <div className="overview-table">
                   {overviewData.recentServices.map(({ machine, record }) => (
-                    <button key={record.id} type="button" onClick={() => { setSelectedMachineId(machine.id); setSelectedServiceRecord(record); }}>
+                    <button key={record.id} type="button" onClick={() => { setSelectedMachineId(machine.id); void openServiceRecord(record); }}>
                       <span>{record.issue_summary || record.equipment || "Atendimento"}</span>
                       <em>{displayMachineCode(machine)} - {formatDate(record.service_date)}</em>
                       <strong>{normalizeServiceType(record.service_type).replace("Acesso remoto", "Remoto").replace("Visita técnica", "Visita")}</strong>
@@ -4409,7 +3223,7 @@ export default function Home() {
                   <div className="card-title"><DetailIcon type="history" /><h3>Histórico de Atendimentos</h3><button className="button ghost" type="button" onClick={showFullHistory}>Ver todos</button></div>
                   <div className="history-list">
                     {selectedMachineRecentHistory.length ? selectedMachineRecentHistory.map((record) => (
-                      <button key={record.id} type="button" onClick={() => setSelectedServiceRecord(record)}>
+                      <button key={record.id} type="button" onClick={() => void openServiceRecord(record)}>
                         <span>{formatDate(record.service_date)}</span>
                         <strong>{record.issue_summary || record.equipment || "Atendimento"}</strong>
                         <em>{normalizeServiceType(record.service_type)}</em>
@@ -4489,7 +3303,7 @@ export default function Home() {
                   </tr></thead>
                   <tbody>
                     {filteredHistory.map((record) => (
-                      <tr key={record.id} className="clickable-row" onClick={() => setSelectedServiceRecord(record)}>
+                      <tr key={record.id} className="clickable-row" onClick={() => void openServiceRecord(record)}>
                         <td>{formatDate(record.service_date)}</td>
                         <td>{record.equipment || "-"}</td>
                         <td>{record.technician_name}</td>
@@ -5042,6 +3856,19 @@ export default function Home() {
                 <button className="button primary" type="submit">Salvar</button>
               </div>
             </form>
+          </div>
+        )}
+
+        {confirmDialog && (
+          <div className="modal-backdrop" role="alertdialog" aria-modal="true" aria-labelledby="confirm-dialog-title" aria-describedby="confirm-dialog-message" onClick={() => answerConfirm(false)}>
+            <div className="modal-card confirm-card" onClick={(event) => event.stopPropagation()}>
+              <h2 id="confirm-dialog-title">{confirmDialog.title}</h2>
+              <p id="confirm-dialog-message">{confirmDialog.message}</p>
+              <div className="modal-actions">
+                <button className="button ghost" type="button" onClick={() => answerConfirm(false)}>Cancelar</button>
+                <button className={confirmDialog.destructive ? "button danger-button" : "button primary"} type="button" autoFocus onClick={() => answerConfirm(true)}>{confirmDialog.confirmLabel}</button>
+              </div>
+            </div>
           </div>
         )}
 
