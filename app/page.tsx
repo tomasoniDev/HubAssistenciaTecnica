@@ -869,7 +869,7 @@ function canEditMachine(role?: UserRole | null) {
 }
 
 function canManageContracts(role?: UserRole | null) {
-  return hasFullAccess(role);
+  return hasFullAccess(role) || role === "Comercial";
 }
 
 function canEmitReports(role?: UserRole | null) {
@@ -882,7 +882,7 @@ function canEmitReports(role?: UserRole | null) {
 }
 
 function canEditSchedule(role?: UserRole | null) {
-  return hasFullAccess(role);
+  return hasFullAccess(role) || role === "Comercial";
 }
 
 function validateCodePattern(value: string, pattern: RegExp, label: string) {
@@ -1197,7 +1197,7 @@ function helpSections(view: View, registryTab: RegistryTab) {
     ["E-mail", "Informe o e-mail corporativo autorizado. Apenas e-mails cadastrados conseguem validar o acesso ao app."],
     ["Perfil / setor", "Escolha o perfil correto para liberar apenas as telas e ações compatíveis com o setor do usuário."],
     ["Acesso Remoto", "Marque esta permissão para liberar a tela de Acesso Remoto e o status de plantão no perfil inferior."],
-    ["Permissões", "Admin e Diretoria têm acesso total, incluindo Cronograma e Contratos. Coordenador segue as permissões de Engenharia e também pode cadastrar usuários. Montagem Elétrica e Montagem Mecânica podem emitir relatórios. Controladoria e Comercial ficam em consulta, sem edição ou emissão."],
+    ["Permissões", "Admin e Diretoria têm acesso total, incluindo Cronograma e Contratos. Coordenador segue as permissões de Engenharia e também pode cadastrar usuários. Montagem Elétrica e Montagem Mecânica podem emitir relatórios. Controladoria fica em consulta, sem edição ou emissão. Comercial pode criar, editar e excluir contratos e viagens; nos demais módulos permanece em consulta, sem emissão de relatórios."],
     ["Ações", "Use o menu de ações da tabela para editar dados do usuário ou remover acessos que não devem mais entrar no sistema."]
   ];
 }
