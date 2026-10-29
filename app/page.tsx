@@ -5,6 +5,7 @@ import Image from "next/image";
 import { downloadServicePdf, servicePdfBase64, servicePdfFileName, servicePdfPreviewUrl } from "@/lib/pdf";
 import { hydrateServiceRecord, needsHeavyFields } from "@/lib/service-record-client";
 import { ToastStack, useToasts } from "@/components/toasts";
+import { isWindowedApp } from "@/lib/display-mode";
 import { UserMenu } from "@/components/user-menu";
 import { AdminView } from "@/components/views/AdminView";
 import { ConfirmDialog } from "@/components/views/ConfirmDialog";
@@ -309,6 +310,22 @@ export default function Home() {
     document.documentElement.classList.toggle("dark", theme === "dark");
     window.localStorage.setItem(THEME_KEY, theme);
   }, [theme]);
+
+  useEffect(() => {
+    const installed = window.matchMedia("(display-mode: standalone), (display-mode: minimal-ui), (display-mode: window-controls-overlay)");
+    function updateWindowedApp() {
+      const windowed = isWindowedApp({ installedApp: installed.matches, innerWidth: window.innerWidth, availWidth: window.screen.availWidth });
+      document.documentElement.classList.toggle("windowed-app", windowed);
+    }
+    updateWindowedApp();
+    window.addEventListener("resize", updateWindowedApp);
+    installed.addEventListener("change", updateWindowedApp);
+    return () => {
+      window.removeEventListener("resize", updateWindowedApp);
+      installed.removeEventListener("change", updateWindowedApp);
+      document.documentElement.classList.remove("windowed-app");
+    };
+  }, []);
 
   useEffect(() => {
     if (!("serviceWorker" in navigator)) return;

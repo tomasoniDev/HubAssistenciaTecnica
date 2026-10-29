@@ -2865,6 +2865,78 @@ tbody tr:hover { background: var(--surface-2); }
   }
 }
 
+/* App instalado fora da tela cheia: mesma barra de navegação inferior das telas estreitas.
+   A classe windowed-app é definida em app/page.tsx (lib/display-mode.ts). */
+  html.windowed-app .app-shell { display: block; }
+  html.windowed-app .sidebar {
+    position: fixed;
+    inset: auto 0 0 0;
+    z-index: 20;
+    width: auto;
+    flex-direction: row;
+    align-items: stretch;
+    gap: 0;
+    border-right: 0;
+    border-top: 1px solid var(--line);
+    padding: 6px 8px calc(6px + env(safe-area-inset-bottom));
+  }
+  html.windowed-app .brand { display: none; }
+  html.windowed-app .side-nav {
+    display: flex;
+    flex: 1;
+    gap: 6px;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  html.windowed-app .side-nav::-webkit-scrollbar { display: none; }
+  html.windowed-app .nav-item {
+    flex: 1 0 auto;
+    flex-direction: column;
+    justify-content: center;
+    gap: 3px;
+    width: auto;
+    min-height: 54px;
+    padding: 6px 10px;
+    text-align: center;
+    font-size: 0.68rem;
+    white-space: nowrap;
+  }
+  html.windowed-app .nav-item svg {
+    width: 22px;
+    height: 22px;
+  }
+  html.windowed-app .user-menu-side { display: none; }
+  html.windowed-app .user-menu-top {
+    display: block;
+    width: auto;
+    margin: 0;
+  }
+  html.windowed-app .user-menu-top .user-menu-trigger {
+    grid-template-columns: 36px;
+    width: auto;
+    padding: 2px;
+    border-radius: 999px;
+  }
+  html.windowed-app .user-menu-top .user-menu-trigger > svg,
+  html.windowed-app .user-menu-top .user-meta { display: none; }
+  html.windowed-app .user-menu-top .user-menu-content {
+    top: calc(100% + 8px);
+    right: 0;
+    bottom: auto;
+    left: auto;
+    min-width: 210px;
+  }
+  html.windowed-app .workspace {
+    margin-left: 0;
+    width: 100%;
+    max-width: 100%;
+    padding-bottom: calc(92px + env(safe-area-inset-bottom));
+  }
+  html.windowed-app .toast-stack { bottom: calc(84px + env(safe-area-inset-bottom)); }
+  html.windowed-app body.signature-mode-open .sidebar,
+  html.windowed-app body.signature-mode-open .user-menu { display: none; }
+  html.windowed-app .logout-button { margin-top: 0; }
+
 @media (min-width: 921px) and (max-width: 1240px) {
   .machine-hero {
     grid-template-columns: minmax(0, 1fr);
