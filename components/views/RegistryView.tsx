@@ -176,7 +176,7 @@ export function RegistryView({
                 <section className="table-panel">
                   <div className="section-header"><h2>Máquinas cadastradas</h2><span>{registryMachines.length} registros</span></div>
                   <div className="table-wrap">
-                    <table>
+                    <table className="fit-table registry-table">
                       <thead><tr>
                         <th aria-sort={registryMachineSort.key === "code" ? (registryMachineSort.direction === "asc" ? "ascending" : "descending") : "none"}><button className="sort-header" type="button" onClick={() => toggleRegistryMachineSort("code")}>Código <span aria-hidden="true">{sortMark(registryMachineSort.key === "code", registryMachineSort.direction)}</span></button></th>
                         <th aria-sort={registryMachineSort.key === "model" ? (registryMachineSort.direction === "asc" ? "ascending" : "descending") : "none"}><button className="sort-header" type="button" onClick={() => toggleRegistryMachineSort("model")}>Modelo <span aria-hidden="true">{sortMark(registryMachineSort.key === "model", registryMachineSort.direction)}</span></button></th>
@@ -219,7 +219,7 @@ export function RegistryView({
               <section className="table-panel">
                 <div className="section-header"><h2>Clientes do Acesso Remoto</h2><span>{sortedChatContacts.length} registros</span></div>
                 <div className="table-wrap">
-                  <table className="compact-table">
+                  <table className="compact-table fit-table clients-table">
                     <thead><tr><th>Cliente</th><th>Empresa</th><th>Telefone</th><th>Última atualização</th><th>Ações</th></tr></thead>
                     <tbody>{sortedChatContacts.map((contact) => (
                       <tr key={contact.id}>
@@ -270,7 +270,7 @@ export function RegistryView({
                 </form>
                 <section className="table-panel">
                   <div className="table-wrap">
-                    <table className="compact-table">
+                    <table className="compact-table fit-table users-table">
                       <thead><tr>
                         <th><button className="sort-header" type="button" onClick={() => toggleUserSort("name")}>Usuário <span>{sortMark(userSort.key === "name", userSort.direction)}</span></button></th>
                         <th><button className="sort-header" type="button" onClick={() => toggleUserSort("email")}>E-mail <span>{sortMark(userSort.key === "email", userSort.direction)}</span></button></th>

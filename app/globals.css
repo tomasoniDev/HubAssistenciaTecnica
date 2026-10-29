@@ -2262,47 +2262,32 @@ table {
 }
 
 .home-table {
-  min-width: 1100px;
-  table-layout: fixed;
+  min-width: 0;
+  table-layout: auto;
 }
 
 .home-table th,
 .home-table td {
   box-sizing: border-box;
-  overflow: hidden;
   padding: 11px 9px;
-  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+/* Colunas de valor curto e de tamanho constante (código, número de série, VM e
+   último atendimento) ocupam só o necessário; o resto do espaço vai para modelo,
+   cliente e cidade, sem quebra de linha. */
 .home-table th:nth-child(1),
-.home-table td:nth-child(1) { width: 12%; }
-
-.home-table th:nth-child(2),
-.home-table td:nth-child(2) { width: 26%; }
-
+.home-table td:nth-child(1),
 .home-table th:nth-child(3),
-.home-table td:nth-child(3) { width: 12%; }
-
-.home-table th:nth-child(4),
-.home-table td:nth-child(4) { width: 18%; }
-
-.home-table th:nth-child(5),
-.home-table td:nth-child(5) { width: 14%; }
-
-.home-table th:nth-child(6),
-.home-table td:nth-child(6) { width: 5%; }
-
-.home-table th:nth-child(7),
-.home-table td:nth-child(7) { width: 13%; }
-
-.home-table td:nth-child(2),
 .home-table td:nth-child(3),
-.home-table td:nth-child(4),
-.home-table td:nth-child(5) {
-  white-space: normal;
-  overflow-wrap: anywhere;
-}
+.home-table th:nth-child(6),
+.home-table td:nth-child(6),
+.home-table th:nth-child(7),
+.home-table td:nth-child(7) { width: 1%; }
+
+/* Cabeçalhos mais longos que o valor podem quebrar em duas linhas para a coluna ficar estreita. */
+.home-table th:nth-child(3),
+.home-table th:nth-child(7) { white-space: normal; }
 
 .home-table th:last-child,
 .home-table td:last-child {
@@ -2311,8 +2296,51 @@ table {
 
 .home-table .sort-header {
   max-width: 100%;
-  white-space: normal;
+  text-align: left;
+  white-space: inherit;
 }
+
+/* Tabelas do Cadastro: colunas de valor curto ocupam só o necessário e o espaço
+   que sobra vai para as colunas de texto. Células sem quebra de linha (a rolagem
+   horizontal da tabela cobre telas pequenas); cabeçalhos podem quebrar. */
+table.fit-table {
+  min-width: 0;
+  table-layout: auto;
+}
+
+.fit-table th,
+.fit-table td {
+  box-sizing: border-box;
+  padding: 11px 9px;
+}
+
+.fit-table td { white-space: nowrap; }
+.fit-table th { white-space: normal; }
+
+.fit-table .sort-header {
+  max-width: 100%;
+  text-align: left;
+  white-space: inherit;
+}
+
+/* Máquinas: código, VM, fabricação, acesso e ações */
+.registry-table th:nth-child(1), .registry-table td:nth-child(1),
+.registry-table th:nth-child(5), .registry-table td:nth-child(5),
+.registry-table th:nth-child(6), .registry-table td:nth-child(6),
+.registry-table th:nth-child(7), .registry-table td:nth-child(7),
+.registry-table th:nth-child(8), .registry-table td:nth-child(8) { width: 1%; }
+
+/* Clientes: telefone, última atualização e ações */
+.clients-table th:nth-child(3), .clients-table td:nth-child(3),
+.clients-table th:nth-child(4), .clients-table td:nth-child(4),
+.clients-table th:nth-child(5), .clients-table td:nth-child(5) { width: 1%; }
+
+/* Usuários: telefone, perfil, acessos e ações */
+.users-table th:nth-child(3), .users-table td:nth-child(3),
+.users-table th:nth-child(4), .users-table td:nth-child(4),
+.users-table th:nth-child(5), .users-table td:nth-child(5),
+.users-table th:nth-child(6), .users-table td:nth-child(6),
+.users-table th:nth-child(7), .users-table td:nth-child(7) { width: 1%; }
 
 .history-table {
   min-width: 760px;
@@ -3108,7 +3136,7 @@ tbody tr:hover { background: var(--surface-2); }
   }
 
   .home-table {
-    min-width: 1100px;
+    min-width: 0;
   }
 
   .schedule-table {
