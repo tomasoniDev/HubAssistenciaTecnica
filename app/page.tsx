@@ -1750,12 +1750,6 @@ export default function Home() {
   }, [currentUserCanManageContracts, scheduleTab]);
 
   useEffect(() => {
-    if (view === "schedule" && !currentUserCanEditSchedule) {
-      setView("home");
-    }
-  }, [currentUserCanEditSchedule, view]);
-
-  useEffect(() => {
     if (view !== "registry") return;
     if (registryTab === "machines" && !currentUserCanEditMachine) {
       setRegistryTab(currentUserCanUseRemoteAccess ? "clients" : "users");
@@ -3606,7 +3600,7 @@ export default function Home() {
           <button className={`nav-item ${view === "home" ? "active" : ""}`} onClick={() => setView("home")}>Tela inicial</button>
           <button className={`nav-item ${view === "overview" ? "active" : ""}`} onClick={() => setView("overview")}>Visão geral</button>
           {currentUserCanUseRemoteAccess && <button className={`nav-item ${view === "chat" ? "active" : ""}`} onClick={() => setView("chat")}>Acesso Remoto</button>}
-          {currentUserCanEditSchedule && <button className={`nav-item ${view === "schedule" ? "active" : ""}`} onClick={() => setView("schedule")}>Cronograma</button>}
+          <button className={`nav-item ${view === "schedule" ? "active" : ""}`} onClick={() => setView("schedule")}>Cronograma</button>
           {(currentUserCanEditMachine || currentUserCanManageUsers || currentUserCanUseRemoteAccess) && <button className={`nav-item ${view === "registry" ? "active" : ""}`} onClick={() => { setRegistryTab(currentUserCanEditMachine ? "machines" : currentUserCanUseRemoteAccess ? "clients" : "users"); setView("registry"); }}>Cadastro</button>}
           {currentUserCanViewAdmin && <button className={`nav-item ${view === "admin" ? "active" : ""}`} onClick={() => setView("admin")}>Administração</button>}
         </nav>
@@ -4123,7 +4117,7 @@ export default function Home() {
           </section>
         )}
 
-        {view === "schedule" && currentUserCanEditSchedule && (
+        {view === "schedule" && (
           <section className="view active schedule-page">
             {currentUserCanManageContracts && (
               <section className="table-panel">
